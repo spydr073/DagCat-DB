@@ -9,11 +9,10 @@
 
 module TestDB
 
-import Data.AA.Map          as M
-import Data.AA.Set.NatIso   as NI
-import Data.AA.Set.MultiSet as MS
-
-import Control.Arrows.MultiArrow
+import Data.AA.Map               as M
+import Data.AA.Set.NatIso        as NI
+import Data.AA.Set.MultiSet      as MS
+import Data.AA.Set.IndexMultiSet as IMS
 
 import Database.BuildUtils
 
@@ -67,15 +66,15 @@ all_fields = buildFields [ nameField
 --{1
 
 name_age : Either String (Relation, Relation)
-name_age = BuildUtils.mkRel schema nameField ageField
+name_age = BuildUtils.mkDagRel schema nameField ageField
 
 name_uid : Either String (Relation, Relation)
-name_uid = BuildUtils.mkRel schema nameField uidField
+name_uid = BuildUtils.mkDagRel schema nameField uidField
 
 age_uid : Either String (Relation, Relation)
-age_uid = BuildUtils.mkRel schema ageField uidField
+age_uid = BuildUtils.mkDagRel schema ageField uidField
 
-all_rels : Map (Int,Int) (Arrow Int Int)
+all_rels : Map (UTy,UTy) Arrow
 all_rels = buildRelations [ name_age
                           , name_uid
                           , age_uid
@@ -88,8 +87,8 @@ all_rels = buildRelations [ name_age
 
 namespace Main
 
-  testDB : DataBase
-  testDB = MkDB schema all_fields all_rels
+  testdb : DataBase
+  testdb = MkDB schema all_fields all_rels
 
   main : IO ()
   main = do
