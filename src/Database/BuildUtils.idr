@@ -128,7 +128,6 @@ Arrow = IMSet DTy DTy
 
 
 ||| Build a model of the relations between domain and codomain.
-export
 mkRel : List (DTy,DTy) -> Arrow
 mkRel = foldr alg empty
   where alg : (DTy,DTy) -> Arrow -> Arrow
@@ -137,7 +136,6 @@ mkRel = foldr alg empty
 
 ||| Apply a multiset to a relation, treating the relation like a function.
 ||| Returns the resulting multiset.
-export
 app : (f : Arrow) -> (xs : MSet DTy) -> MSet DTy
 app f xs = foldr alg empty xs
   where alg : Cell DTy -> MSet DTy -> MSet DTy
@@ -148,7 +146,6 @@ app f xs = foldr alg empty xs
 
 infixr 9 :.:
 ||| Compose two relations into a composite relation.
-export
 (:.:) : Arrow -> Arrow -> Arrow
 (:.:) fmap gmap = foldr alg empty fmap
   where alg : IMS.Cell DTy DTy -> Arrow -> Arrow
@@ -157,7 +154,6 @@ export
 
 infixr 9 :*:
 ||| Take the cross product between two relations iff the elements share their domain element.
-export
 (:*:) : Arrow -> Arrow -> Arrow
 (:*:) fmap gmap = foldr alg empty fmap
   where alg : IMS.Cell DTy DTy -> Arrow -> Arrow
@@ -169,7 +165,6 @@ export
 
 infixr 8 :+:
 ||| Coproduct between two arrows.
-export
 (:+:) : Arrow -> Arrow -> Arrow
 (:+:) fmap gmap = foldr ralg (foldr lalg empty fmap) gmap
   where
@@ -178,6 +173,13 @@ export
 
     ralg : IMS.Cell DTy DTy -> Arrow -> Arrow
     ralg (Bin i x) acc = insert (S $ Right i) x acc
+
+
+||| Dagger operator
+dag_op : Arrow -> Arrow
+dag_op = IMS.foldr alg empty
+  where alg : IMS.Cell DTy DTy -> Arrow -> Arrow
+        alg (Bin i xs) acc = MS.foldr (\(Elem k n),m => insert k (singleton i) m) acc xs
 
 --}
 
@@ -272,7 +274,6 @@ empty = MkDB empty empty empty
 
 
 -- does not handle conflicts
-export
 insertRel : Field -> Field -> DataBase -> DataBase
 insertRel f1 f2 db@(MkDB scma fs arrs) =
   let scma' = (insert $ field_name f1) . (insert $ field_name f2) $ scma
@@ -310,7 +311,7 @@ viewTypes : DataBase -> List String
 viewTypes (MkDB scma _ _) = toList scma
 
 
-export
+
 getArrow : DataBase -> String -> String -> Either String (UTy, UTy, Arrow)
 getArrow (MkDB scma _ primArr) dom cod with (find dom scma, find cod scma)
   | (Nothing , _      ) = Left "Domain does not exist."
@@ -322,7 +323,7 @@ getArrow (MkDB scma _ primArr) dom cod with (find dom scma, find cod scma)
                                Just r  => Right (d, c, r)
 
 
-export
+
 encodeData : DataBase -> String -> MSet String -> MSet DTy
 encodeData (MkDB _ enum _) lbl ms with (find lbl enum)
   | Nothing = empty
@@ -354,13 +355,15 @@ export
 Show DagArrow where
   show (MkDagArr d c r) = show d <+> " -> " <+> show c
 
-public export
+export
 DagError : Type
 DagError = String
 
-public export
+export
 MDag : Type
 MDag = Either DagError DagArrow
+
+
 
 export
 mkDagM : DataBase -> String -> String -> MDag
@@ -400,6 +403,12 @@ sum (Right $ MkDagArr d1 c1 r1) (Right $ MkDagArr d2 c2 r2) with (c1 == c2)
                  <+> "  expected  '_ -> " <+> show c1 <+> "'\n"
                  <+> "  recieved  '_ -> " <+> show c2 <+> "'"
   | True  = Right $ MkDagArr (Sum c1 c2) c1 (r1 :+: r2)
+
+
+export
+dag : MDag -> MDag
+dag (Left e) = Left e
+dag (Right $ MkDagArr d c r) = Right $ MkDagArr c d (dag_op r)
 
 --}
 
