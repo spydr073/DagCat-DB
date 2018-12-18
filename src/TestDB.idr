@@ -9,12 +9,10 @@
 
 module TestDB
 
+import GraphDB
+
 import Data.AA.Map               as M
 import Data.AA.Set.NatIso        as NISO
-import Data.AA.Set.MultiSet      as MS
-import Data.AA.Set.IndexMultiSet as IMS
-
-import Database.BuildUtils
 
 %default total
 %access private
@@ -69,13 +67,13 @@ all_fields = buildFields [ nameField
 --{1
 
 name_age : Either String (Relation, Relation)
-name_age = BuildUtils.mkDagRel schema nameField ageField
+name_age = mkDagRel schema nameField ageField
 
 name_uid : Either String (Relation, Relation)
-name_uid = BuildUtils.mkDagRel schema nameField uidField
+name_uid = mkDagRel schema nameField uidField
 
 age_uid : Either String (Relation, Relation)
-age_uid = BuildUtils.mkDagRel schema ageField uidField
+age_uid = mkDagRel schema ageField uidField
 
 all_rels : Map (UTy,UTy) Arrow
 all_rels = buildRelations [ name_age
@@ -118,7 +116,7 @@ namespace Main
   q3 = sum f g
 
   q4 : MDag
-  q4 = comp f f'
+  q4 = comp f g'
 
   q5 : MDag
   q5 = comp f (comp g' h)
@@ -128,6 +126,12 @@ namespace Main
 
   q7 : MDag
   q7 = comp (sum h f') h'
+
+  q8 : MDag
+  q8 = dag q1
+
+  q9 : MDag
+  q9 = comp f f'
 
   main : IO ()
   main = do
