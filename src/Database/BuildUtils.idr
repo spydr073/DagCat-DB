@@ -9,8 +9,9 @@
 
 module Database.BuildUtils
 
+import Data.AA.Tree              as T
 import Data.AA.Map               as M
-import Data.AA.Set.NatIso        as NI
+import Data.AA.Set.NatIso        as NISO
 import Data.AA.Set.MultiSet      as MS
 import Data.AA.Set.IndexMultiSet as IMS
 
@@ -138,7 +139,7 @@ mkRel = foldr alg empty
 ||| Returns the resulting multiset.
 app : (f : Arrow) -> (xs : MSet DTy) -> MSet DTy
 app f xs = foldr alg empty xs
-  where alg : Cell DTy -> MSet DTy -> MSet DTy
+  where alg : MS.Cell DTy -> MSet DTy -> MSet DTy
         alg (Elem v n) r with (find v f)
           | Nothing = r
           | Just ys = union ys r
@@ -191,12 +192,26 @@ enumerate : List String -> NatIso String
 enumerate = Foldable.foldr NatIso.insert empty
 
 
+export
+decodeNatIso : NatIso String -> Map Nat String
+decodeNatIso (NI _ t) = foldr alg empty $ T.toList t
+  where alg : NISO.Cell String -> Map Nat String -> Map Nat String
+        alg (Elem s n) m = bind (KV n s) m
+
+
+export
+showDecoded : Show a => Nat -> Map Nat String -> String
+showDecoded n m with (find n m)
+  | Nothing = "Index Not Found"
+  | Just a  = show a
+
+
 mapEnum : NatIso String -> List String -> List Nat
 mapEnum e lst = go lst []
   where go : List String -> List Nat -> List Nat
         go l acc with (l)
           | []      = acc
-          | (x::xs) = case NI.find x e of
+          | (x::xs) = case NISO.find x e of
                         Nothing => acc
                         Just v  => go xs (v::acc)
 
@@ -327,7 +342,7 @@ getArrow (MkDB scma _ primArr) dom cod with (find dom scma, find cod scma)
 encodeData : DataBase -> String -> MSet String -> MSet DTy
 encodeData (MkDB _ enum _) lbl ms with (find lbl enum)
   | Nothing = empty
-  | Just ty = MS.foldr (\(Elem x n),acc => case NI.find x ty of
+  | Just ty = MS.foldr (\(Elem x n),acc => case NISO.find x ty of
                                              Nothing => acc
                                              Just x' => insert (A $ cast x') acc
                        ) empty ms
@@ -344,6 +359,19 @@ encodeData (MkDB _ enum _) lbl ms with (find lbl enum)
 ----------------------------------------------------------------------------[ Dagger Database DSL ]
 --{1
 
+ppUTy : Map Nat String -> UTy -> String
+ppUTy m ty = case ppUTy' ty of
+               Left  err => err
+               Right msg => msg
+  where ppUTy' : UTy -> Either String String
+        ppUTy' t with (t)
+          | Atom x with (M.find (cast x) m)
+            | Nothing  = Left $ "Type index " <+> show x <+> " does not exist!"
+            | Just str = Right str
+          | Prod x y = (\x',y' => x' <+> " * " <+> y') <$> (ppUTy' x) <*> (ppUTy' y)
+          | Sum  x y = (\x',y' => x' <+> " + " <+> y') <$> (ppUTy' x) <*> (ppUTy' y)
+
+
 public export
 record DagArrow where
   constructor MkDagArr
@@ -351,25 +379,58 @@ record DagArrow where
   cod : UTy
   rel : Arrow
 
-export
+public export
 Show DagArrow where
   show (MkDagArr d c r) = show d <+> " -> " <+> show c
 
-export
-DagError : Type
-DagError = String
+ppDagArr : Map Nat String -> UTy -> UTy -> String
+ppDagArr m d c = (ppUTy m d) <+> " -> " <+> (ppUTy m c)
+
 
 export
+data DagError : Type where
+  ArrowNotFound : (dom : String) -> (cod : String) -> DagError
+  ProdMismatch  : (edom : UTy) -> (rdom : UTy) -> DagError
+  SumMismatch   : (ecod : UTy) -> (rcod : UTy) -> DagError
+  CompMismatch  : (edom : UTy) -> (rdom : UTy) -> DagError
+
+showArrowMismatch : String -> String -> String -> String -> String
+showArrowMismatch d1 c1 d2 c2 = "Type mismatch on second argument : \n"
+                       <+> "  expected  '" <+> d1 <+> " -> " <+> c1 <+> "'\n"
+                       <+> "  recieved  '" <+> d2 <+> " -> " <+> c2 <+> "'\n"
+
+export
+Show DagError where
+  show e with (e)
+    | ArrowNotFound  dom  cod = "Arrow '" <+> dom <+> " -> " <+> cod <+> "' does not exist!"
+    | ProdMismatch  edom rdom = showArrowMismatch (show edom) "_" (show rdom) "_"
+    | SumMismatch   ecod rcod = showArrowMismatch "_" (show ecod) "_" (show rcod)
+    | CompMismatch  edom rdom = showArrowMismatch (show edom) "_" (show rdom) "_"
+
+ppDagErr : Map Nat String -> DagError -> String
+ppDagErr m err with (err)
+  | ArrowNotFound d c  = "Arrow " <+> d <+> "->" <+> c <+> " does not exist!"
+  | ProdMismatch d1 d2 = showArrowMismatch (ppUTy m d1) "_" (ppUTy m d2) "_"
+  | SumMismatch  c1 c2 = showArrowMismatch "_" (ppUTy m c1)  "_" (ppUTy m c2)
+  | CompMismatch d1 d2 = showArrowMismatch (ppUTy m d1) "_" (ppUTy m d2) "_"
+
+
+public export
 MDag : Type
 MDag = Either DagError DagArrow
-
-
 
 export
 mkDagM : DataBase -> String -> String -> MDag
 mkDagM db dom cod with (getArrow db dom cod)
-  | Left   _      = Left $ "Arrow '" <+> dom <+> " -> " <+> cod <+> "' does not exist!"
+  | Left   _      = Left  $ ArrowNotFound dom cod
   | Right (d,c,r) = Right $ MkDagArr d c r
+
+export
+ppArrow : Map Nat String -> MDag -> String
+ppArrow m marr with (marr)
+  | Left err = ppDagErr m err
+  | Right (MkDagArr d c r) = ppDagArr m d c
+
 
 
 export
@@ -377,9 +438,7 @@ comp : MDag -> MDag -> MDag
 comp (Left e)  _        = Left e
 comp  _       (Left e)  = Left e
 comp (Right $ MkDagArr d1 c1 r1) (Right $ MkDagArr d2 c2 r2) with (c1 == d2)
-  | False = Left $ "Type mismatch on second argument : \n"
-                 <+> "  expected '" <+> show c1 <+> " -> _'\n"
-                 <+> "  recieved '" <+> show d2 <+> " -> _'"
+  | False = Left  $ CompMismatch c1 d2
   | True  = Right $ MkDagArr d1 c2 (r1 :.: r2)
 
 
@@ -388,9 +447,7 @@ prod : MDag -> MDag -> MDag
 prod (Left e)  _        = Left e
 prod  _       (Left e)  = Left e
 prod (Right $ MkDagArr d1 c1 r1) (Right $ MkDagArr d2 c2 r2) with (d1 == d2)
-  | False = Left $ "Type mismatch on second argument : \n"
-                 <+> "  expected '" <+> show d1 <+> " -> _'\n"
-                 <+> "  recieved '" <+> show d2 <+> " -> _'"
+  | False = Left  $ ProdMismatch d1 d2
   | True  = Right $ MkDagArr d1 (Prod c1 c2) (r1 :*: r2)
 
 
@@ -399,10 +456,8 @@ sum : MDag -> MDag -> MDag
 sum (Left e)  _        = Left e
 sum  _       (Left e)  = Left e
 sum (Right $ MkDagArr d1 c1 r1) (Right $ MkDagArr d2 c2 r2) with (c1 == c2)
-  | False = Left $ "Type mismatch on second argument : \n"
-                 <+> "  expected  '_ -> " <+> show c1 <+> "'\n"
-                 <+> "  recieved  '_ -> " <+> show c2 <+> "'"
-  | True  = Right $ MkDagArr (Sum c1 c2) c1 (r1 :+: r2)
+  | False = Left  $ SumMismatch c1 c2
+  | True  = Right $ MkDagArr (Sum d1 d2) c1 (r1 :+: r2)
 
 
 export

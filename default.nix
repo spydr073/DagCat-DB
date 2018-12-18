@@ -13,7 +13,8 @@ stdenv.mkDerivation rec {
 
   #-- alias idris to set path and load packages
   shellHook = ''
-    alias idris='idris -i./src -p effects -p aatree'
+    idrisHook() { idris -i./src -p effects -p aatree "$@"; }
+    alias idr=idrisHook
   '';
 
 }

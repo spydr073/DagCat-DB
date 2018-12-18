@@ -10,7 +10,7 @@
 module TestDB
 
 import Data.AA.Map               as M
-import Data.AA.Set.NatIso        as NI
+import Data.AA.Set.NatIso        as NISO
 import Data.AA.Set.MultiSet      as MS
 import Data.AA.Set.IndexMultiSet as IMS
 
@@ -38,6 +38,9 @@ import Database.BuildUtils
 
 schema : NatIso String
 schema = enumerate ["name", "uid", "age"]
+
+schema' : Map Nat String
+schema' = decodeNatIso schema
 
 --}
 
@@ -90,13 +93,44 @@ namespace Main
   testdb : DataBase
   testdb = MkDB schema all_fields all_rels
 
+  f  : MDag
+  f  = mkDagM testdb "name" "age"
+  f' : MDag
+  f' = mkDagM testdb "age"  "name"
+
+  g  : MDag
+  g  = mkDagM testdb "uid"  "age"
+  g' : MDag
+  g' = mkDagM testdb "age"  "uid"
+
+  h  : MDag
+  h  = mkDagM testdb "uid"  "name"
+  h' : MDag
+  h' = mkDagM testdb "name" "uid"
+
+  q1 : MDag
+  q1 = comp f g'
+
+  q2 : MDag
+  q2 = prod f' g'
+
+  q3 : MDag
+  q3 = sum f g
+
+  q4 : MDag
+  q4 = comp f f'
+
+  q5 : MDag
+  q5 = comp f (comp g' h)
+
+  q6 : MDag
+  q6 = comp f (comp g' g)
+
+  q7 : MDag
+  q7 = comp (sum h f') h'
+
   main : IO ()
   main = do
-
-    let f1 = name_age
-    --let f2 = name_uid
-    --let f3 = age_uid
-
     putStrLn "Done!"
 
 --}
