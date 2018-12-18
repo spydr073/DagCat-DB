@@ -1,4 +1,3 @@
-
 -----------------------------------------------------------------------------------------[ Module ]
 --{1
 --                                                                              (\_/)
@@ -10,10 +9,7 @@
 
 module Database.Relations
 
---import Data.AA.Tree              as T
 import Data.AA.Map               as M
---import Data.AA.Set.NatIso        as NISO
---import Data.AA.Set.MultiSet      as MS
 import Data.AA.Set.IndexMultiSet as IMS
 
 import Database.Types
@@ -28,9 +24,8 @@ import Database.Graph
 
 --}
 
-----------------------------------------------------------------------------[ Dagger Database DSL ]
+-------------------------------------------------------------------------------[ Raw Graph Arrows ]
 --{1
-
 
 public export
 record DagArrow where
@@ -39,13 +34,19 @@ record DagArrow where
   cod : UTy
   rel : Arrow
 
+
 public export
 Show DagArrow where
   show (MkDagArr d c r) = show d <+> " -> " <+> show c
 
+
 ppDagArr : Map Nat String -> UTy -> UTy -> String
 ppDagArr m d c = (ppUTy m d) <+> " -> " <+> (ppUTy m c)
 
+--}
+
+------------------------------------------------------------------------------[ Graph Arrow Errors]
+--{1
 
 export
 data DagError : Type where
@@ -54,10 +55,12 @@ data DagError : Type where
   SumMismatch   : (ecod : UTy) -> (rcod : UTy) -> DagError
   CompMismatch  : (edom : UTy) -> (rdom : UTy) -> DagError
 
+
 showArrowMismatch : String -> String -> String -> String -> String
 showArrowMismatch d1 c1 d2 c2 = "Type mismatch on second argument : \n"
                        <+> "  expected  '" <+> d1 <+> " -> " <+> c1 <+> "'\n"
                        <+> "  recieved  '" <+> d2 <+> " -> " <+> c2 <+> "'\n"
+
 
 export
 Show DagError where
@@ -67,6 +70,7 @@ Show DagError where
     | SumMismatch   ecod rcod = showArrowMismatch "_" (show ecod) "_" (show rcod)
     | CompMismatch  edom rdom = showArrowMismatch (show edom) "_" (show rdom) "_"
 
+
 ppDagErr : Map Nat String -> DagError -> String
 ppDagErr m err with (err)
   | ArrowNotFound d c  = "Arrow " <+> d <+> "->" <+> c <+> " does not exist!"
@@ -74,10 +78,15 @@ ppDagErr m err with (err)
   | SumMismatch  c1 c2 = showArrowMismatch "_" (ppUTy m c1)  "_" (ppUTy m c2)
   | CompMismatch d1 d2 = showArrowMismatch (ppUTy m d1) "_" (ppUTy m d2) "_"
 
+--}
+
+------------------------------------------------------------------------------[ Safe Graph Arrows ]
+--{1
 
 public export
 MDag : Type
 MDag = Either DagError DagArrow
+
 
 export
 mkDagM : DataBase -> String -> String -> MDag
@@ -85,13 +94,17 @@ mkDagM db dom cod with (getArrow db dom cod)
   | Left   _      = Left  $ ArrowNotFound dom cod
   | Right (d,c,r) = Right $ MkDagArr d c r
 
+
 export
 ppArrow : Map Nat String -> MDag -> String
 ppArrow m marr with (marr)
   | Left err = ppDagErr m err
   | Right (MkDagArr d c r) = ppDagArr m d c
 
+--}
 
+----------------------------------------------------------------------------[ Relation Operations ]
+--{1
 
 export
 comp : MDag -> MDag -> MDag

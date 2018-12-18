@@ -1,4 +1,3 @@
-
 -----------------------------------------------------------------------------------------[ Module ]
 --{1
 --                                                                              (\_/)
@@ -32,6 +31,7 @@ data DTy : Type where
   P : Pair   DTy DTy -> DTy
   S : Either DTy DTy -> DTy
 
+
 Eq DTy where
   -- Not sure how to write the assert_smaller here...
   -- So we use the more radical assert_total for now...
@@ -40,6 +40,7 @@ Eq DTy where
     | (P x , P y) = assert_total $ x == y
     | (S x , S y) = assert_total $ x == y
     | (_   , _  ) = False
+
 
 Ord DTy where
   -- Not sure how to write the assert_smaller here...
@@ -52,6 +53,7 @@ Ord DTy where
     | (_   , A _) = GT
     | (S _ , _  ) = GT
     | (_   , S _) = LT
+
 
 public export
 Arrow : Type

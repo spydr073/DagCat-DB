@@ -1,4 +1,3 @@
-
 -----------------------------------------------------------------------------------------[ Module ]
 --{1
 --                                                                              (\_/)
@@ -197,3 +196,6 @@ getArrow (MkDB scma _ primArr) dom cod with (find dom scma, find cod scma)
 --  | Right (d c r) = r (encodeData db dom $ foldr (insert . show) empty xs)
 
 --}
+
+
+
