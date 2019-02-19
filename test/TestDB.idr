@@ -91,6 +91,10 @@ namespace Main
   testdb : DataBase
   testdb = MkDB schema all_fields all_rels
 
+  pp : MDag -> String
+  pp = ppArrow schema'
+
+
   f  : MDag
   f  = mkDagM testdb "name" "age"
   f' : MDag

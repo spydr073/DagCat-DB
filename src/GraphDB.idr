@@ -9,10 +9,10 @@
 
 module GraphDB
 
-import public Database.Types
-import public Database.Arrows
-import public Database.Graph
-import public Database.Relations
+import public Graph.Types
+import public Graph.Arrows
+import public Graph.Relations
+import public Graph.Tools
 
 %default total
 

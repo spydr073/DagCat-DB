@@ -7,14 +7,14 @@
 --                                                                           KILLER BUNNY
 --                                                                             APPROVED
 
-module Database.Relations
+module Graph.Relations
 
 import Data.AA.Map               as M
 import Data.AA.Set.IndexMultiSet as IMS
 
-import Database.Types
-import Database.Arrows
-import Database.Graph
+import Graph.Types
+import Graph.Arrows
+import Graph.Graph
 
 %default total
 %access private

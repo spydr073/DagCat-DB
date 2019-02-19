@@ -1,0 +1,1386 @@
+-----------------------------------------------------------------------------------------[ Module ]
+--{1
+--                                                                              (\_/)
+--                                                                              (o.O)
+--                                                                              (> <)
+--                                                                             #######
+--                                                                           KILLER BUNNY
+--                                                                             APPROVED
+
+module Database.UniProt.Parser
+
+import Database.UniProt.Types
+
+import public Lightyear
+import public Lightyear.Char
+import public Lightyear.Strings
+
+import Data.String
+
+%default partial
+%access private
+
+%flag C "-O3"
+%flag C "-g"
+
+--}
+
+------------------------------------------------------------------------------------------[ Utils ]
+--{1
+
+fromJust : a -> Maybe a -> a
+fromJust def x with (x)
+  | Nothing = def
+  | Just  v = v
+
+--}
+
+-------------------------------------------------------------------------------------[ Prim Types ]
+--{1
+
+whitespace : Parser ()
+whitespace = skip $ many (oneOf " \t")
+
+whitespaces : Parser ()
+whitespaces = skip $ some (oneOf " \t")
+
+-- override lightyear 'lexeme' as newlines are significant
+tok : Parser a -> Parser a
+tok p = p <* whitespace
+
+
+||| Multiline string:
+|||   @pre : the UniProt field prefix
+|||   @end : the terminating char
+mlstr : (pre : String) -> (end : Char) -> Parser String
+mlstr pre end = let str = with List (pack <$> some (noneOf (pack [end,'\n'])))
+                in (\x,y => concat (intersperse " " (x::y)))
+              <$> ((opt (endOfLine *> string pre)) *> whitespace *> str)
+              <*> (many (endOfLine *> string pre *> whitespace *> str))
+
+
+||| Multiline list:
+|||   @pre : the UniProt field prefix
+|||   @sep : the seperator char
+|||   @end : the terminating string
+mllst : (pre : String) -> (sep : Char) -> (end : Char) -> Parser (List String)
+mllst pre sep end = let str = with List (pack <$> many (noneOf $ pack [sep, end, '\n']))
+                    in (\x,y => (x::y))
+                  <$> (string pre *> whitespace *> tok str)
+                  <*> many (char sep *> opt (endOfLine *> string pre) *> whitespace *> str)
+                      <* char end
+
+--}
+
+---------------------------------------------------------------------------------------[ ID Field ]
+--{1
+
+parseID : Parser UID
+parseID = MkUID <$> name <*!> status <*!> seqLen <*! endOfLine
+      <?> "Protein ID"
+  where
+    validChar : Parser Char
+    validChar = satisfy isAlphaNum <|>| oneOf "_"
+
+    name : Parser String
+    name = pack <$> ((tok $ string "ID") *!> (tok $ some validChar))
+
+    status : Parser Status
+    status = (string "Reviewed" *!> pure Reviewed)
+        <|>| (string "Unreviewed" *!> pure Unreviewed)
+
+    seqLen : Parser Int
+    seqLen = ((fromJust 0) . parseInteger . pack)
+         <$> ((tok $ char ';') *!> (tok $ many (satisfy isDigit)) <*! string "AA.")
+
+--}
+
+---------------------------------------------------------------------------------------[ AC Field ]
+--{1
+
+parseAC : Parser AC
+parseAC = (\x,y => MkAC $ x <+> y)
+          <$> concat <$> (acStart *!> (many $ acLine <* endOfLine <* acStart))
+          <*> acLine <*! endOfLine
+          <?> "Accession Numbers"
+  where
+    validChar : Parser Char
+    validChar = satisfy isAlphaNum <|>| oneOf "_-"
+
+    acStart : Parser ()
+    acStart = string "AC" *!> whitespace
+
+    acLine : Parser (List String)
+    acLine = some (pack <$> (some validChar) <* (tok $ char ';'))
+
+--}
+
+---------------------------------------------------------------------------------------[ DT Field ]
+--{1
+
+parseDT : Parser DT
+parseDT = MkDT <$> dtStr
+              <*!> ((dtCC "integrated into UniProtKB/") <*! endOfLine)
+              <*!> dtStr
+              <*!> (((fromJust 0) . parseInteger) <$> (dtCC "sequence version ") <*! endOfLine)
+              <*!> dtStr
+              <*!> (((fromJust 0) . parseInteger) <$> (dtCC "entry version ") <*! endOfLine)
+      <?> "DT field"
+  where
+    validChar : Parser Char
+    validChar = satisfy isAlphaNum <|>| oneOf "_-"
+
+    dtStr : Parser String
+    dtStr = pack <$> ((tok $ string "DT") *!> (tok $ some validChar <*! char ','))
+
+    dtCC : String -> Parser String
+    dtCC txt = pack <$> (string txt *!> some validChar <*! char '.')
+
+--}
+
+---------------------------------------------------------------------------------------[ DE Field ]
+--{1
+
+parseDE : Parser DE
+parseDE = MkDE <$>  opt (nameNode "RecName:")
+              <*!> many altName
+              <*!> many (nameNode "SubName:")
+              <*!> many include
+              <*!> many contain
+              <*!> flags
+              <*! endOfLine
+              <?> "DE field"
+  where
+    deStr : Parser ()
+    deStr = string "DE" *> whitespace
+
+    nameStr : Parser String
+    nameStr = (trim . pack) <$> (some (noneOf ";{"))
+                            <*! many (noneOf ";")         -- chomp evidence tokens
+                            <*! char ';' <*! endOfLine
+
+    names : String -> String -> Parser String
+    names field desc = deStr *> opt (tok $ string field)
+                    *> string desc *!> char '=' *!> nameStr
+
+    ecNumber : Parser String
+    ecNumber = deStr *> (tok $ string "EC=") *!> nameStr
+
+    nameNode : String -> Parser Name
+    nameNode field = MkName <$> names field "Full"
+                            <*!> many (names field "Short")
+                            <*!> many (ecNumber)
+
+    altType : String -> Parser String
+    altType ty = deStr *> (tok $ string "AltName:") *!> string ty *!> nameStr
+
+    altName : Parser AltName
+    altName = (Simple    <$> nameNode "AltName:")
+         <|>| (Allergen  <$> altType  "Allergen=")
+         <|>| (Biotech   <$> altType  "Biotech=")
+         <|>| (CDAntigen <$> altType  "CD_antigen=")
+         <|>| (INN       <$> altType  "INN=")
+
+    include : Parser (Maybe Name, List AltName, List Name)
+    include = (\x,y,z => (x,y,z)) <$> (deStr *> (tok $ string "Includes:") *!> endOfLine
+           *!> opt (nameNode "RecName:"))
+          <*!> many altName
+          <*!> many (nameNode "SubName:")
+
+    contain : Parser (Maybe Name, List AltName, List Name)
+    contain = (\x,y,z => (x,y,z)) <$> (deStr *> (tok $ string "Contains:") *!> endOfLine
+           *!> opt (nameNode "RecName:"))
+          <*!> many altName
+          <*!> many (nameNode "SubName:")
+
+    flags : Parser (List Flag)
+    flags = (fromJust []) <$>
+            opt (deStr *> (tok $ string "Flags:") *>
+                 many ((tok $ string "Fragment;"  *!> pure Fragment)  <|>|
+                       (tok $ string "Fragments;" *!> pure Fragments) <|>|
+                       (tok $ string "Precursor;" *!> pure Precursor)
+                      ))
+
+
+--}
+
+---------------------------------------------------------------------------------------[ GN Field ]
+--{1
+
+parseGN : Parser (List GN)
+parseGN = sepBy (MkGN <$> opt name <*!> syn <*!> loci <*!> orf) gnAnd
+      <?> "GN field"
+  where
+    gn : Parser ()
+    gn = string "GN" *!> whitespace
+
+    gnAnd : Parser ()
+    gnAnd = endOfLine *> gn *!> (tok $ string "and") *!> endOfLine *!> pure ()
+
+    nameStr : Parser String
+    nameStr = (trim . pack) <$> (many $ noneOf ",;")
+
+    name : Parser String
+    name = gn *!> (tok $ string "Name=") *!> nameStr <*! (tok $ char ';')
+
+    syn  : Parser (List String)
+    syn = (fromJust [])
+      <$> ((opt (endOfLine *!> gn)) *!>
+           (opt ((tok $ string "Synonyms=") *!>
+                 sepBy nameStr (char ',') <*!
+                 (tok $ char ';'))))
+
+    loci : Parser (List String)
+    loci = (fromJust [])
+       <$> ((opt (endOfLine *> gn)) *!>
+            (opt ((tok $ string "OrderedLocusNames=") *!>
+                   sepBy nameStr (char ',') <*!
+                   (tok $ char ';'))))
+
+    orf  : Parser (List String)
+    orf = (fromJust [])
+      <$> ((opt (endOfLine *> gn)) *!>
+           (opt ((tok $ string "ORFNames=") *!>
+                 sepBy nameStr (char ',') <*!
+                 (tok $ char ';'))))
+
+
+--}
+
+---------------------------------------------------------------------------------------[ OS Field ]
+--{1
+
+parseOS : Parser OS
+parseOS = MkOS <$> (os *!> name) <*!> (common <*! (tok $ char '.')) <*! endOfLine
+      <?> "OS field"
+  where
+    os : Parser ()
+    os = string "OS" *!> whitespace
+
+    str : Parser String
+    str = (trim . pack) <$> many (noneOf "().\n")
+
+    name : Parser String
+    name = (\x,y => if y == "" then x else x ++ " " ++ y)
+       <$> str
+       <*!> (concat . intersperse " ") <$> (many (endOfLine *!> os *!> str))
+       <?> "OS species name"
+
+    common : Parser (List String)
+    common = many (whitespace *> (opt $ endOfLine *!> os) *> char '(' *!> name <*! char ')')
+        <?> "OS common names"
+
+--}
+
+---------------------------------------------------------------------------------------[ OG Field ]
+--{1
+
+parseOG : Parser (List OG)
+parseOG = many (((nonPlasmid <*! many (noneOf ".") <*! (tok $ char '.'))
+                 <|>| plasmid) <*! endOfLine)
+      <?> "OG Field"
+  where
+    og : Parser String
+    og = tok $ string "OG"
+
+    plasmidStr : Parser String
+    plasmidStr = tok (string "Plasmid")
+
+    nonPlasmid : Parser OG
+    nonPlasmid = og *>
+      (    ((string "Hydrogenosome") *!> pure Hydrogenosome)
+      <|>| ((string "Mitochondrion") *!> pure Mitochondrion)
+      <|>| ((string "Nucleomorph")   *!> pure Nucleomorph)
+
+      <|>| ((string "Plastid; Apicoplast")
+               *!> pure (Plastid PlastidApicoplast))
+      <|>| ((string "Plastid; Chloroplast")
+               *!> pure (Plastid PlastidChloroplast))
+      <|>| ((string "Plastid; Organellar chromatophore")
+               *!> pure (Plastid PlastidOrganellarChromatophore))
+      <|>| ((string "Plastid; Cyanelle")
+               *!> pure (Plastid PlastidCyanelle))
+      <|>| ((string "Plastid; Non-photosynthetic plastid")
+               *!> pure (Plastid PlastidNonPhotosynthetic))
+      <|>| ((string "Plastid")
+               *!> pure (Plastid PlastidSimple))
+      )
+
+    str : Parser String
+    str = (trim . pack) <$> many (noneOf ",.")
+
+    plasmid : Parser OG
+    plasmid = (\x,y => Plasmid (x::y))
+          <$> (og *!> plasmidStr *!> str)
+          <*> many ((char ',' *!> whitespace) *!> (opt (tok (string "and")))
+                    *> (opt (endOfLine *!> og)) *!> plasmidStr *!> str) <*! char '.'
+
+--}
+
+---------------------------------------------------------------------------------------[ OC Field ]
+--{1
+
+parseOC : Parser OC
+parseOC = (\x,y => MkOC (x::y)) <$> (os *!> str) <*!> (taxa <*! (tok $ char '.'))
+      <?> "OC Field"
+  where
+    os : Parser ()
+    os = string "OC" *!> whitespace
+
+    str : Parser String
+    str = (trim . pack) <$> many (noneOf ";.\n")
+
+    taxa : Parser (List String)
+    taxa = many ((tok $ char ';') *!> (opt (endOfLine *!> os)) *!> str)
+       <?> "OC taxa list"
+
+--}
+
+---------------------------------------------------------------------------------------[ OX Field ]
+--{1
+
+parseOX : Parser OX
+parseOX = MkOX
+     <$> (pack <$> ((tok (string "OX")) *!> many (noneOf "=") <*! char '='))
+     <*> (pack <$> (many (noneOf ";")) <*! char ';') <*! endOfLine
+     <?> "OX Field"
+
+--}
+
+---------------------------------------------------------------------------------------[ OH Field ]
+--{1
+
+parseOH : Parser (List OH)
+parseOH = many (MkOH <$> tid <*!> name <*!> (common <*! char '.' <*! (opt endOfLine)))
+     <?> "OH Field"
+  where
+    oh : Parser ()
+    oh = (string "OH") *> whitespace
+
+    tid : Parser (String,String)
+    tid = MkPair
+     <$> (pack <$> (oh *!> many (noneOf "=") <*! char '='))
+     <*!> (pack <$> (many (noneOf ";")) <*! (tok (char ';')))
+
+    str : Parser String
+    str = (trim . pack) <$> many (noneOf "().\n")
+
+    name : Parser String
+    name = (\x,y => if y == "" then x else x ++ " " ++ y)
+       <$> str
+       <*!> (concat . intersperse " ") <$> (many (endOfLine *!> oh *!> str))
+       <?> "OH species name"
+
+    common : Parser (List String)
+    common = many (whitespace *> (opt $ endOfLine *!> oh) *> char '(' *!> name <*! char ')')
+        <?> "OH common names"
+
+--}
+
+-------------------------------------------------------------------------------[ Reference Fields ]
+--{1
+
+--  rn : Int
+--  rp : String
+--  rc : List (RCom, String)
+--  rx : List (BibDB, String)
+--  rg : List String
+--  ra : List String
+--  rt : Maybe String
+--  rl : String
+
+parseRef : Parser (List Ref)
+parseRef = many (MkRef <$> rn <*!> rp <*!> rc <*!> rx <*!> rg <*!> ra <*!> rt <*!> rl)
+       <*! endOfLine
+  where
+    rn : Parser Int
+    rn = ((fromJust 0) . parseInteger . pack)
+     <$> ((string "RN") *!> whitespace *!> char '['
+         *!> (many $ satisfy isDigit)
+         <*! char ']')
+     <?> "RN reference number"
+
+    rp : Parser String
+    rp = (concat . (List.intersperse " "))
+     <$> (many (endOfLine *!> (tok (string "RP"))
+            *!> (pack <$> many (noneOf ".\n"))) <*! char '.')
+     <?> "RP reference position"
+
+    rcFst : Parser RCom
+    rcFst = ((string "STRAIN=")     *!> pure STRAIN)
+       <|>| ((string "PLASMID=")    *!> pure PLASMID)
+       <|>| ((string "TRANSPOSON=") *!> pure TRANSPOSON)
+       <|>| ((string "TISSUE=")     *!> pure TISSUE)
+
+    rcSnd : Parser String
+    rcSnd = pack <$> (many ((noneOf ";\n")
+                      <*! (opt (endOfLine *!> string "RC" *!> whitespace))))
+
+    rc : Parser (List (RCom, String))
+               *!> (MkPair <$> rcFst <*!> (rcSnd <*! tok (char ';'))))
+     <?> "RC reference comment"
+    rc with (_)
+      rc | with_pat = ?rc_rhs
+
+    rxFst : Parser BibDB
+    rxFst = ((string "MEDLINE=")  *> pure MEDLINE)
+       <|>| ((string "PubMed=")   *> pure PubMed)
+       <|>| ((string "DOI=")      *> pure DOI)
+       <|>| ((string "AGRICOLA=") *> pure AGRICOLA)
+
+    rxSnd : Parser String
+    rxSnd = pack <$> (many ((noneOf ";\n")
+                      <* (opt (endOfLine *> string "RX" *> whitespace))))
+
+    rx : Parser (List (BibDB, String))
+    rx = many (opt (endOfLine *> string "RX" *> whitespace)
+               *> (MkPair <$> rxFst <*> (rxSnd <* tok (char ';'))))
+
+    rg : Parser (List String)
+    rg = endOfLine *> string "RG" *> many ((mlstr "RG" ';') <* char ';')
+
+    ra : Parser (List String)
+    ra = endOfLine *> mllst "RA" ',' ';'
+
+    rt : Parser (Maybe String)
+    rt = opt (endOfLine *> string "RT" *> (strTail <$> mlstr "RT" '.') <* string ".\";")
+
+    rl : Parser String
+    rl = (concat . intersperse " ") <$>
+         (many (endOfLine *> string "RL" *> whitespace *> (pack <$> many (noneOf "\n"))))
+
+
+
+--}
+
+---------------------------------------------------------------------------------------[ CC Field ]
+--{1
+
+parseCC : Parser (List CC)
+parseCC = many (MkCC <$> topic <*> comment)
+  where
+    topic : Parser String
+    topic = endOfLine *> (tok $ string "CC") *> (tok $ string "-!-")
+         *> (pack <$> many (noneOf ":"))
+         <* (tok $ char ':')
+
+    comment : Parser String
+    comment = (\x,y => concat $ intersperse " " (x::y))
+          <$> (pack <$> many (noneOf "\n"))
+          <*> many (endOfLine *> string "CC" *> whitespace
+                     *> requireFailure (string "-!-")
+                     *> (pack <$> many (noneOf "\n")))
+
+--}
+
+---------------------------------------------------------------------------------------[ DR Field ]
+--{1
+
+parseDR : Parser (List DR)
+parseDR = many (MkDR <$> abbr <*> uid <*> info)
+  where
+    optBracket : Parser ()
+    optBracket = whitespace <* opt (char '[' *> many (noneOf "]") *> char ']')
+
+    abbr : Parser String
+    abbr = string "DR" *> whitespace
+        *> (pack <$> many (noneOf ";")) <* tok (char ';')
+
+    uid : Parser String
+    uid = pack <$> many (noneOf ";") <* tok (char ';')
+
+    info : Parser (List String)
+    info = (string "-." *> optBracket *> endOfLine *> pure [])
+      <|>| ((::) <$> (pack <$> many (noneOf ".;"))
+                 <*> (many (char ';' *> whitespace *> (pack <$> many (noneOf ".;"))))
+                     <* char '.' <* optBracket <* endOfLine)
+
+--}
+
+---------------------------------------------------------------------------------------[ PE Field ]
+--{1
+
+parsePE : Parser PE
+parsePE = string "PE" *> whitespace *>
+   (    ((string "1: Evidence at protein level;")
+          *> pure EvidenceAtProteinLevel)
+   <|>| ((string "2: Evidence at transcript level;")
+          *> pure EvidenceAtTranscriptLevel)
+   <|>| ((string "3: Inferred from homology;")
+          *> pure InferredFromHomology)
+   <|>| ((string "4: Predicted;")
+          *> pure Predicted)
+   <|>| ((string "5: Uncertain;")
+         *> pure Uncertain)
+   )
+
+
+--}
+
+---------------------------------------------------------------------------------------[ KW Field ]
+--{1
+
+parseKW : Parser KW
+parseKW = MkKW <$> mllst "KW" ';' '.'
+
+--}
+
+---------------------------------------------------------------------------------------[ FT Field ]
+--{1
+
+-- Whitespace is important here!
+--   cols    field
+--   ---------------------
+--   1-2     FT
+--   6-13    Key name
+--   15-20   From endpoint
+--   22-27   To endpoint
+--   35-75   Description
+
+parseFT : Parser (List FT)
+parseFT = many (MkFT <$> name <*> from <*> to <*> desc)
+  where
+    name : Parser String
+    name = string "FT   " *> (trim . pack) <$> ntimes 8 anyChar <* char ' '
+
+    from : Parser String
+    from = ((trim . pack) <$> ntimes 6 anyChar <* char ' ')
+      <|>| pure ""
+
+    to : Parser String
+    to = ((trim . pack) <$> ntimes 6 anyChar <* char ' ')
+      <|>| pure ""
+
+    cleanFT : List String -> List String
+    cleanFT lst with (lst)
+      | Nil        = Nil
+      | [x]        = [x]
+      | (x::y::xs) = case last' (unpack x) of
+                       Nothing => cleanFT (y::xs)
+                       Just c => if c /= '.'
+                                   then cleanFT ((x++y)::xs)
+                                   else (x :: cleanFT (y::xs))
+
+    desc : Parser (List String)
+    desc = ((\x,y => cleanFT (x::y))
+            <$> ((trim . pack) <$> many (noneOf "\n"))
+            <*> (many (endOfLine *> string "FT    " *> whitespaces
+                       *> ((trim . pack) <$> many (noneOf "\n")))) <* endOfLine)
+      <|>| pure []
+
+--}
+
+---------------------------------------------------------------------------------------[ SQ Field ]
+--{1
+
+parseSQ : Parser SQ
+parseSQ = string "SQ" *> whitespaces *> string "SEQUENCE" *> whitespace
+       *> MkSQ <$> len <*> mass <*> crc64 <*> seq
+  where
+    len : Parser Int
+    len = ((fromJust 0) . parseInteger . pack)
+      <$> ((tok $ many (satisfy isDigit)) <* tok (string "AA;"))
+
+
+    mass : Parser Int
+    mass  = ((fromJust 0) . parseInteger . pack)
+        <$> ((tok $ many (satisfy isDigit)) <* tok (string "MW;"))
+
+    crc64 : Parser String
+    crc64 = pack <$> (many $ noneOf " ") <* whitespace <* string "CRC64;" <* endOfLine
+
+    seq : Parser String
+    seq = concat <$> some ((opt endOfLine) *> whitespace *> (pack <$> some upper))
+
+--}
+
+--------------------------------------------------------------------------[ Parse UniProtKB Entry ]
+--{1
+
+-- UniProt Text File Fields:
+--
+--   uid  : UID              -- Identification           : Once
+--   ac   : AC               -- Accession number(s)      : Once or more
+--   dt   : DT               -- Date                     : Three times
+--   de   : DE               -- Description              : Once or more
+--   gn   : Maybe (List GN)  -- Gene name(s)             : Optional
+--   os   : OS               -- Organism species         : Once or more
+--   og   : Maybe (List OG)  -- Organelle                : Optional
+--   oc   : OC               -- Organism classification  : Once or more
+--   ox   : OX               -- Taxonomy cross-refs      : Once
+--   oh   : Maybe (List OH)  -- Organism host            : Optional
+--   refs : List Ref         -- References               : Once or more
+--   cc   : maybe (List CC)  -- Comments or notes        : Optional
+--   dr   : maybe (List DR)  -- Database cross-refs      : Optional
+--   pe   : PE               -- Protein existence        : Once
+--   kw   : Maybe KW         -- Keywords                 : Optional
+--   ft   : Maybe (List FT)  -- Feature table data       : Once or more in Swiss-Prot
+--                                                       , optional in TrEMBL
+--   sq   : SQ               -- Sequence header          : Once
+
+parseEntry : Parser Entry
+parseEntry = MkEntry
+         <$> parseID
+         <*> parseAC
+         <*> parseDT
+         <*> parseDE
+         <*> opt parseGN
+         <*> parseOS
+         <*> opt parseOG
+         <*> parseOC
+         <*> parseOX
+         <*> opt parseOH
+         <*> parseRef
+         <*> opt parseCC
+         <*> opt parseDR
+         <*> parsePE
+         <*> opt parseKW
+         <*> opt parseFT
+         <*> parseSQ
+
+--}
+
+
+------------------------------------------------------------------------------------------[ Tests ]
+--{1
+
+--{2 ID
+
+block_id : String
+block_id = """ID   NA228_NEMVE             Reviewed;          85 AA.
+"""
+
+--}
+
+--{2 AC
+
+block_ac : String
+block_ac = """AC   B1NWR6; A7SCE0; B1NWR8; B1NWR9; B1NWS2; B1NWS7; B1NWS9; B5L633;
+AC   B5L634;
+"""
+
+--}
+
+--{2 DT
+
+block_dt : String
+block_dt = """DT   05-OCT-2010, integrated into UniProtKB/Swiss-Prot.
+DT   05-OCT-2010, sequence version 2.
+DT   16-JAN-2019, entry version 34.
+"""
+
+--}
+
+--{2 DE
+
+block_de : String
+block_de = """DE   RecName: Full=N.vectensis toxin 1 3 {ECO:0000303|PubMed:18538344};
+DE            Short=Nv1 {ECO:0000303|PubMed:18538344};
+DE   AltName: Full=Delta-edwarditoxin-Nvc1c {ECO:0000303|PubMed:22683676};
+DE            Short=Delta-EWTX-Nvc1c {ECO:0000303|PubMed:22683676};
+DE   AltName: Full=Delta-edwarditoxin-Nvc1d {ECO:0000303|PubMed:22683676};
+DE            Short=Delta-EWTX-Nvc1d {ECO:0000303|PubMed:22683676};
+DE   AltName: Full=Neurotoxin Nv1-116.28.1 {ECO:0000303|PubMed:18222944};
+DE   AltName: Full=Neurotoxin Nv1-13 {ECO:0000312|EMBL:ABW97343.1};
+DE   AltName: Full=Neurotoxin Nv1-15 {ECO:0000312|EMBL:ABW97345.1};
+DE   AltName: Full=Neurotoxin Nv1-17 {ECO:0000305, ECO:0000312|EMBL:ACB71118.1};
+DE   AltName: Full=Neurotoxin Nv1-18 {ECO:0000305, ECO:0000312|EMBL:ACB71119.1};
+DE   AltName: Full=Neurotoxin Nv1-19 {ECO:0000305, ECO:0000312|EMBL:ACB71120.1};
+DE   AltName: Full=Neurotoxin Nv1-2 {ECO:0000312|EMBL:ABW97332.1};
+DE   AltName: Full=Neurotoxin Nv1-4 {ECO:0000312|EMBL:ABW97334.1};
+DE   AltName: Full=Neurotoxin Nv1-5 {ECO:0000312|EMBL:ABW97335.1};
+DE   AltName: Full=Neurotoxin Nv1-8 {ECO:0000312|EMBL:ABW97338.1};
+DE   AltName: Allergen=Ric c 1/3;
+DE   Contains:
+DE     RecName: Full=Allergen Ric c 3 small chain;
+DE     AltName: Full=4.7 kDa napin-like protein small chain;
+DE     AltName: Full=CB-1A small chain;
+DE     AltName: Full=RS1A;
+DE   Contains:
+DE     RecName: Full=Allergen Ric c 3 large chain;
+DE     AltName: Full=CB-1A large chain;
+DE     AltName: Full=RL1;
+DE   Contains:
+DE     RecName: Full=Allergen Ric c 1 small chain;
+DE     AltName: Full=2S albumin small chain;
+DE     AltName: Full=4 kDa napin-like protein small chain;
+DE     AltName: Full=RS2B;
+DE   Contains:
+DE     RecName: Full=Allergen Ric c 1 large chain;
+DE     AltName: Full=2S albumin large chain;
+DE     AltName: Full=7.3 kDa napin-like protein large chain;
+DE     AltName: Full=RL2;
+DE   Flags: Precursor; Fragment;
+"""
+
+--}
+
+--{2 GN
+
+block_gn : String
+block_gn = """GN   Name=FBA1; OrderedLocusNames=CAALFM_C401750CA;
+GN   ORFNames=CaO19.12088, CaO19.4618;
+GN   and
+GN   Name=Jon99Cii; Synonyms=SER1, SER5, Ser99Da; ORFNames=CG7877;
+GN   and
+GN   Name=Jon99Ciii; Synonyms=SER2, SER5, Ser99Db; ORFNames=CG15519;
+GN   and
+GN   Name=hns; Synonyms=bglY, cur, drdX, hnsA, msyA, osmZ, pilG, topS;
+GN   OrderedLocusNames=b1237, c1701, z2013, ECs1739;
+"""
+
+--}
+
+--{2 OS
+
+block_os : String
+block_os = """OS   Rous
+OS  sarcoma
+OS  virus (strain Schmidt-Ruppin A) (RSV-
+OS  SRA)
+OS (Avian leukosis virus-RSA).
+"""
+
+--}
+
+--{2 OG
+
+block_og : String
+block_og = """OG   Hydrogenosome.
+OG   Mitochondrion.
+OG   Nucleomorph.
+OG   Plasmid R6-5, Plasmid IncFII R100 (NR1), and
+OG   Plasmid IncFII R1-19 (R1 drd-19).
+OG   Plastid.
+OG   Plastid; Apicoplast.
+OG   Plastid; Chloroplast.
+OG   Plastid; Organellar chromatophore.
+OG   Plastid; Cyanelle.
+OG   Plastid; Non-photosynthetic plastid.
+"""
+
+--}
+
+--{2 OC
+
+block_oc : String
+block_oc = """OC   Eukaryota; Metazoa; Chordata; Craniata; Vertebrata; Euteleostomi;
+OC   Mammalia; Eutheria; Euarchontoglires; Primates; Catarrhini; Hominidae;
+OC   Homo.
+"""
+
+--}
+
+--{2 OX
+
+block_ox : String
+block_ox = """OX   NCBI_TaxID=9606;
+"""
+
+--}
+
+--{2 OH
+
+block_oh : String
+block_oh = """OH   NCBI_TaxID=9481; Callithrix.
+OH   NCBI_TaxID=9536; Cercopithecus hamlyni (Owl-faced monkey) (Hamlyn's monkey).
+OH   NCBI_TaxID=9539; Macaca (macaques).
+OH   NCBI_TaxID=9598; Pan troglodytes (Chimpanzee).
+"""
+
+--}
+
+--{2 Ref
+
+block_ref : String
+block_ref = """RN   [1]
+RP   NUCLEOTIDE SEQUENCE [MRNA] (ISOFORMS A AND C), FUNCTION, INTERACTION
+RP   WITH PKC-3, SUBCELLULAR LOCATION, TISSUE SPECIFICITY, DEVELOPMENTAL
+RP   STAGE, AND MUTAGENESIS OF PHE-175 AND PHE-221.
+RC   STRAIN=Bristol N2; PLASMID=R1 (R7268);
+RC   TRANSPOSON=Tn3; STRAIN=AL.012, AZ.026, AZ.180, DC.005, GA.039, GA2181, IL.014, IL2.17,
+RC   IN.018, KY.172, KY2.37, LA.013, MI.035, MN.001, MNb027, MS.040,
+RC   NY.016, OH.036, TN.173, TN2.38, UT.002, and VA.015;
+RX   PubMed=11134024; DOI=10.1074/jbc.M008990200;
+RX   PubMed=11134024; DOI=10.1074/jbc.M008990200;
+RG   The mouse genome sequencing consortium;
+RG   The mouse genome sequencing consortium; The mouse genome
+RG   sequencing consortium;
+RA   Zhang L., Wu S.-L., Rubin C.S.,
+RA   Zhang L., Wu S.-L., Rubin C.S. ;
+RT   "A novel adapter protein employs a phosphotyrosine binding domain and
+RT   exceptionally basic N-terminal domains to capture and localize an
+RT   atypical protein kinase C: characterization of Caenorhabditis elegans
+RT   C kinase adapter 1, a protein that avidly binds protein kinase C3.";
+RL   J. Biol. Chem. 276:10463-10475(2001).
+RL   J. Biol. Chem. 276:10463-10475(2001).
+RL   (In) Magnusson S., Ottesen M., Foltmann B., Dano K., Neurath H.
+RL   (eds.);
+RL   Regulatory proteolytic enzymes and their inhibitors, pp.163-172,
+RL   Pergamon Press, New York (1978).
+"""
+
+--}
+
+--{2 CC
+
+block_cc : String
+block_cc = """
+CC   -!- ALLERGEN: Causes an allergic reaction in human. Binds to IgE.
+CC       Partially heat-labile allergen that may cause both respiratory and
+CC       food-allergy symptoms in patients with the bird-egg syndrome.
+CC   -!- ALLERGEN: Causes an allergic reaction in human. Minor allergen of
+CC       bovine dander.
+CC   -!- ALTERNATIVE PRODUCTS:
+CC       Event=Alternative splicing; Named isoforms=3;
+CC         Comment=Additional isoforms seem to exist. Experimental
+CC         confirmation may be lacking for some isoforms;
+CC       Name=1; Synonyms=AIRE-1;
+CC         IsoId=O43918-1; Sequence=Displayed;
+CC       Name=2; Synonyms=AIRE-2;
+CC         IsoId=O43918-2; Sequence=VSP_004089;
+CC       Name=3; Synonyms=AIRE-3;
+CC         IsoId=O43918-3; Sequence=VSP_004089, VSP_004090;
+CC   -!- ALTERNATIVE PRODUCTS:
+CC       Event=Alternative initiation; Named isoforms=2;
+CC       Name=Alpha;
+CC         IsoId=P51636-1; Sequence=Displayed;
+CC       Name=Beta;
+CC         IsoId=P51636-2; Sequence=VSP_018696;
+CC   -!- BIOPHYSICOCHEMICAL PROPERTIES:
+CC       pH dependence:
+CC         Optimum pH is 8-10;
+CC       Temperature dependence:
+CC         Highly active at low temperatures, even at 0 degree Celsius.
+CC         Thermolabile;
+CC   -!- BIOPHYSICOCHEMICAL PROPERTIES:
+CC       Kinetic parameters:
+CC         KM=98 uM for ATP;
+CC         KM=688 uM for pyridoxal;
+CC         Vmax=1.604 mmol/min/mg enzyme;
+CC       pH dependence:
+CC         Optimum pH is 6.0. Active from pH 4.5 to 10.5;
+"""
+
+--}
+
+--{2 DR
+
+block_dr : String
+block_dr = """DR   ArachnoServer; AS000173; kappa-hexatoxin-Hv1b.
+DR   Araport; AT4G08920; -.
+DR   Bgee; ENSRNOG00000001873; Expressed in 9 organ(s), highest expression level in skeletal muscle tissue.
+DR   BindingDB; P06709; -.
+DR   BioCyc; EcoCyc:USHA-MONOMER; -.
+DR   CCDS; CCDS18166.1; -. [O89019-1]
+DR   BioGrid; 69392; 1.
+DR   BioMuta; TF; -.
+DR   BRENDA; 3.5.99.5; 3804.
+DR   CarbonylDB; Q14789; -.
+DR   CAZy; GH109; Glycoside Hydrolase Family 109.
+"""
+
+--}
+
+--{2 PE
+
+block_pe : String
+block_pe =
+  "PE    1: Evidence at protein level;\n"
+  --"PE    2: Evidence at transcript level;\n"
+  --"PE    3: Inferred from homology;\n"
+  --"PE    4: Predicted;\n"
+  --"PE    5: Uncertain;\n"
+
+--}
+
+--{2 KW
+
+block_kw : String
+block_kw ="""KW   3D-structure; Alternative splicing; Alzheimer disease; Amyloid;
+KW   Apoptosis; Cell adhesion; Coated pits; Copper;
+KW   Direct protein sequencing; Disease mutation; Endocytosis;
+KW   Glycoprotein; Heparin-binding; Iron; Membrane; Metal-binding;
+KW   Notch signaling pathway; Phosphorylation; Polymorphism;
+KW   Protease inhibitor; Proteoglycan; Serine protease inhibitor; Signal;
+KW   Transmembrane; Zinc.
+"""
+
+--}
+
+--{2 FT
+
+block_ft : String
+block_ft ="""FT   CARBOHYD    251    251       N-linked (GlcNAc...) asparagine.
+FT                                /FTId=CAR_000070.
+FT   CHAIN        23    611       Halfway protein.
+FT                                /FTId=PRO_0000021413.
+FT   PEPTIDE      20     57       Histatin 1.
+FT                                /FTId=PRO_0000021416.
+FT   PROPEP       25     48
+FT                                /FTId=PRO_0000021449.
+FT   VARIANT     214    214       V -> I.
+FT                                /FTId=VAR_009122.
+FT   VAR_SEQ      33     83       TPDINPAWYTGRGIRPVGRFGRRRATPRDVTGLGQLSCLPL
+FT                                DGRTKFSQRG -> SECLTYGKQPLTSFHPFTSQMPP (in
+FT                                isoform 2).
+FT                                /FTId=VSP_004370.
+"""
+
+--}
+
+--{2 SQ
+
+block_sq : String
+block_sq ="""SQ   SEQUENCE   97 AA;  9110 MW;  E3C20C259858B830 CRC64;
+     MTILASICKL GNTKSTSSSI GSSYSSAVSF GSNSVSCGEC GGDGPSFPNA SPRTGVKAGV
+     NVDGLLGAIG KTVNGMLISP NGGGGGMGMG GGSCGCI
+"""
+
+--}
+
+--{2 Entry
+
+entry1 : String
+entry1 = """ID   PAP_YEAST               Reviewed;         568 AA.
+AC   P29468; D6VXT8;
+DT   01-APR-1993, integrated into UniProtKB/Swiss-Prot.
+DT   01-APR-1993, sequence version 1.
+DT   16-JAN-2019, entry version 179.
+DE   RecName: Full=Poly(A) polymerase;
+DE            Short=PAP;
+DE            EC=2.7.7.19;
+DE   AltName: Full=Polynucleotide adenylyltransferase;
+GN   Name=PAP1; OrderedLocusNames=YKR002W;
+OS   Saccharomyces cerevisiae (strain ATCC 204508 / S288c) (Baker's yeast).
+OC   Eukaryota; Fungi; Dikarya; Ascomycota; Saccharomycotina;
+OC   Saccharomycetes; Saccharomycetales; Saccharomycetaceae; Saccharomyces.
+OX   NCBI_TaxID=559292;
+RN   [1]
+RP   NUCLEOTIDE SEQUENCE [GENOMIC DNA], AND PARTIAL PROTEIN SEQUENCE.
+RC   STRAIN=ATCC 204510 / AB320;
+RX   PubMed=1840648; DOI=10.1038/354496a0;
+RA   Lingner J., Kellermann J., Keller W.;
+RT   "Cloning and expression of the essential gene for poly(A) polymerase
+RT   from S. cerevisiae.";
+RL   Nature 354:496-498(1991).
+RN   [2]
+RP   NUCLEOTIDE SEQUENCE [GENOMIC DNA].
+RC   STRAIN=ATCC 204508 / S288c;
+RX   PubMed=1441752; DOI=10.1002/yea.320080908;
+RA   Duesterhoeft A., Philippsen P.;
+RT   "DNA sequencing and analysis of a 24.7 kb segment encompassing
+RT   centromere CEN11 of Saccharomyces cerevisiae reveals nine previously
+RT   unknown open reading frames.";
+RL   Yeast 8:749-759(1992).
+RN   [3]
+RP   NUCLEOTIDE SEQUENCE [LARGE SCALE GENOMIC DNA].
+RC   STRAIN=ATCC 204508 / S288c;
+RX   PubMed=8196765; DOI=10.1038/369371a0;
+RA   Dujon B., Alexandraki D., Andre B., Ansorge W., Baladron V.,
+RA   Ballesta J.P.G., Banrevi A., Bolle P.-A., Bolotin-Fukuhara M.,
+RA   Bossier P., Bou G., Boyer J., Buitrago M.J., Cheret G., Colleaux L.,
+RA   Daignan-Fornier B., del Rey F., Dion C., Domdey H., Duesterhoeft A.,
+RA   Duesterhus S., Entian K.-D., Erfle H., Esteban P.F., Feldmann H.,
+RA   Fernandes L., Fobo G.M., Fritz C., Fukuhara H., Gabel C., Gaillon L.,
+RA   Garcia-Cantalejo J.M., Garcia-Ramirez J.J., Gent M.E., Ghazvini M.,
+RA   Goffeau A., Gonzalez A., Grothues D., Guerreiro P., Hegemann J.H.,
+RA   Hewitt N., Hilger F., Hollenberg C.P., Horaitis O., Indge K.J.,
+RA   Jacquier A., James C.M., Jauniaux J.-C., Jimenez A., Keuchel H.,
+RA   Kirchrath L., Kleine K., Koetter P., Legrain P., Liebl S., Louis E.J.,
+RA   Maia e Silva A., Marck C., Monnier A.-L., Moestl D., Mueller S.,
+RA   Obermaier B., Oliver S.G., Pallier C., Pascolo S., Pfeiffer F.,
+RA   Philippsen P., Planta R.J., Pohl F.M., Pohl T.M., Poehlmann R.,
+RA   Portetelle D., Purnelle B., Puzos V., Ramezani Rad M., Rasmussen S.W.,
+RA   Remacha M.A., Revuelta J.L., Richard G.-F., Rieger M.,
+RA   Rodrigues-Pousada C., Rose M., Rupp T., Santos M.A., Schwager C.,
+RA   Sensen C., Skala J., Soares H., Sor F., Stegemann J., Tettelin H.,
+RA   Thierry A., Tzermia M., Urrestarazu L.A., van Dyck L.,
+RA   van Vliet-Reedijk J.C., Valens M., Vandenbol M., Vilela C.,
+RA   Vissers S., von Wettstein D., Voss H., Wiemann S., Xu G.,
+RA   Zimmermann J., Haasemann M., Becker I., Mewes H.-W.;
+RT   "Complete DNA sequence of yeast chromosome XI.";
+RL   Nature 369:371-378(1994).
+RN   [4]
+RP   GENOME REANNOTATION.
+RC   STRAIN=ATCC 204508 / S288c;
+RX   PubMed=24374639; DOI=10.1534/g3.113.008995;
+RA   Engel S.R., Dietrich F.S., Fisk D.G., Binkley G., Balakrishnan R.,
+RA   Costanzo M.C., Dwight S.S., Hitz B.C., Karra K., Nash R.S., Weng S.,
+RA   Wong E.D., Lloyd P., Skrzypek M.S., Miyasato S.R., Simison M.,
+RA   Cherry J.M.;
+RT   "The reference genome sequence of Saccharomyces cerevisiae: Then and
+RT   now.";
+RL   G3 (Bethesda) 4:389-398(2014).
+RN   [5]
+RP   INTERACTION WITH FIR1.
+RX   PubMed=9236779; DOI=10.1007/s004380050491;
+RA   del Olmo M., Mizrahi N., Gross S., Moore C.L.;
+RT   "The Uba2 and Ufd1 proteins of Saccharomyces cerevisiae interact with
+RT   poly(A) polymerase and affect the polyadenylation activity of cell
+RT   extracts.";
+RL   Mol. Gen. Genet. 255:209-218(1997).
+RN   [6]
+RP   INTERACTION WITH RRP6.
+RX   PubMed=10611239; DOI=10.1128/MCB.20.2.604-616.2000;
+RA   Burkard K.T.D., Butler J.S.;
+RT   "A nuclear 3'-5' exonuclease involved in mRNA degradation interacts
+RT   with Poly(A) polymerase and the hnRNA protein Npl3p.";
+RL   Mol. Cell. Biol. 20:604-616(2000).
+RN   [7]
+RP   IDENTIFICATION IN THE CPF COMPLEX, SUBCELLULAR LOCATION, AND
+RP   IDENTIFICATION BY MASS SPECTROMETRY.
+RX   PubMed=12819204; DOI=10.1074/jbc.M304454200;
+RA   Nedea E., He X., Kim M., Pootoolal J., Zhong G., Canadien V.,
+RA   Hughes T., Buratowski S., Moore C.L., Greenblatt J.;
+RT   "Organization and function of APT, a subcomplex of the yeast cleavage
+RT   and polyadenylation factor involved in the formation of mRNA and small
+RT   nucleolar RNA 3'-ends.";
+RL   J. Biol. Chem. 278:33000-33010(2003).
+RN   [8]
+RP   SUBCELLULAR LOCATION [LARGE SCALE ANALYSIS].
+RX   PubMed=14562095; DOI=10.1038/nature02026;
+RA   Huh W.-K., Falvo J.V., Gerke L.C., Carroll A.S., Howson R.W.,
+RA   Weissman J.S., O'Shea E.K.;
+RT   "Global analysis of protein localization in budding yeast.";
+RL   Nature 425:686-691(2003).
+RN   [9]
+RP   LEVEL OF PROTEIN EXPRESSION [LARGE SCALE ANALYSIS].
+RX   PubMed=14562106; DOI=10.1038/nature02046;
+RA   Ghaemmaghami S., Huh W.-K., Bower K., Howson R.W., Belle A.,
+RA   Dephoure N., O'Shea E.K., Weissman J.S.;
+RT   "Global analysis of protein expression in yeast.";
+RL   Nature 425:737-741(2003).
+RN   [10]
+RP   PHOSPHORYLATION [LARGE SCALE ANALYSIS] AT SER-452, AND IDENTIFICATION
+RP   BY MASS SPECTROMETRY [LARGE SCALE ANALYSIS].
+RX   PubMed=18407956; DOI=10.1074/mcp.M700468-MCP200;
+RA   Albuquerque C.P., Smolka M.B., Payne S.H., Bafna V., Eng J., Zhou H.;
+RT   "A multidimensional chromatography technology for in-depth
+RT   phosphoproteome analysis.";
+RL   Mol. Cell. Proteomics 7:1389-1396(2008).
+RN   [11]
+RP   PHOSPHORYLATION [LARGE SCALE ANALYSIS] AT SER-550, AND IDENTIFICATION
+RP   BY MASS SPECTROMETRY [LARGE SCALE ANALYSIS].
+RX   PubMed=19779198; DOI=10.1126/science.1172867;
+RA   Holt L.J., Tuch B.B., Villen J., Johnson A.D., Gygi S.P., Morgan D.O.;
+RT   "Global analysis of Cdk1 substrate phosphorylation sites provides
+RT   insights into evolution.";
+RL   Science 325:1682-1686(2009).
+RN   [12]
+RP   X-RAY CRYSTALLOGRAPHY (2.6 ANGSTROMS) OF 1-537 IN COMPLEX WITH ATP
+RP   ANALOG AND MANGANESE IONS.
+RX   PubMed=10958780; DOI=10.1126/science.289.5483.1346;
+RA   Bard J., Zhelkovsky A.M., Helmling S., Earnest T.N., Moore C.L.,
+RA   Bohm A.;
+RT   "Structure of yeast poly(A) polymerase alone and in complex with 3'-
+RT   dATP.";
+RL   Science 289:1346-1349(2000).
+RN   [13]
+RP   X-RAY CRYSTALLOGRAPHY (1.8 ANGSTROMS) OF 1-530.
+RX   PubMed=17223131; DOI=10.1016/j.jmb.2006.12.030;
+RA   Balbo P.B., Toth J., Bohm A.;
+RT   "X-ray crystallographic and steady state fluorescence characterization
+RT   of the protein dynamics of yeast polyadenylate polymerase.";
+RL   J. Mol. Biol. 366:1401-1415(2007).
+RN   [14]
+RP   X-RAY CRYSTALLOGRAPHY (1.8 ANGSTROMS) OF 5-529 OF MUTANT ALA-154 IN
+RP   COMPLEX WITH ATP; MAGNESIUM IONS AND OLIGONUCLEOTIDE, CATALYTIC
+RP   ACTIVITY, FUNCTION, COFACTOR, AND MUTAGENESIS OF ASP-154; ASN-189;
+RP   LYS-215 AND ASN-226.
+RX   PubMed=17850751; DOI=10.1016/j.str.2007.07.010;
+RA   Balbo P.B., Bohm A.;
+RT   "Mechanism of poly(A) polymerase: structure of the enzyme-MgATP-RNA
+RT   ternary complex and kinetic analysis.";
+RL   Structure 15:1117-1131(2007).
+RN   [15]
+RP   X-RAY CRYSTALLOGRAPHY (2.6 ANGSTROMS) OF 1-537 IN COMPLEX WITH FIP1,
+RP   FUNCTION, CATALYTIC ACTIVITY, INTERACTION WITH FIP1, AND MUTAGENESIS
+RP   OF CYS-485 AND VAL-489.
+RX   PubMed=18537269; DOI=10.1021/bi800204k;
+RA   Meinke G., Ezeokonkwo C., Balbo P., Stafford W., Moore C., Bohm A.;
+RT   "Structure of yeast poly(A) polymerase in complex with a peptide from
+RT   Fip1, an intrinsically disordered protein.";
+RL   Biochemistry 47:6859-6869(2008).
+CC   -!- FUNCTION: Polymerase component of the cleavage and polyadenylation
+CC       factor (CPF) complex, which plays a key role in polyadenylation-
+CC       dependent pre-mRNA 3'-end formation and cooperates with cleavage
+CC       factors including the CFIA complex and NAB4/CFIB.
+CC       {ECO:0000269|PubMed:17850751, ECO:0000269|PubMed:18537269}.
+CC   -!- CATALYTIC ACTIVITY:
+CC       Reaction=ATP + RNA(n) = diphosphate + RNA(n)-3'-adenine
+CC         ribonucleotide; Xref=Rhea:RHEA:11332, Rhea:RHEA-COMP:11128,
+CC         Rhea:RHEA-COMP:14647, ChEBI:CHEBI:30616, ChEBI:CHEBI:33019,
+CC         ChEBI:CHEBI:83400, ChEBI:CHEBI:140626; EC=2.7.7.19;
+CC         Evidence={ECO:0000269|PubMed:17850751,
+CC         ECO:0000269|PubMed:18537269};
+CC   -!- COFACTOR:
+CC       Name=Mg(2+); Xref=ChEBI:CHEBI:18420;
+CC         Evidence={ECO:0000269|PubMed:17850751};
+CC       Name=Mn(2+); Xref=ChEBI:CHEBI:29035;
+CC         Evidence={ECO:0000269|PubMed:17850751};
+CC       Note=Binds 2 magnesium ions. Also active with manganese.
+CC       {ECO:0000269|PubMed:17850751};
+CC   -!- SUBUNIT: Component of the cleavage and polyadenylation factor
+CC       (CPF) complex, which is composed of PTI1, SYC1, SSU72, GLC7, MPE1,
+CC       REF2, PFS2, PTA1, YSH1/BRR5, SWD2, CFT2/YDH1, YTH1, CFT1/YHH1,
+CC       FIP1 and PAP1. Interacts with FIR1 and RRP6.
+CC       {ECO:0000269|PubMed:10611239, ECO:0000269|PubMed:10958780,
+CC       ECO:0000269|PubMed:12819204, ECO:0000269|PubMed:17850751,
+CC       ECO:0000269|PubMed:18537269, ECO:0000269|PubMed:9236779}.
+CC   -!- INTERACTION:
+CC       Q06632:CFT1; NbExp=5; IntAct=EBI-12917, EBI-32872;
+CC       P45976:FIP1; NbExp=9; IntAct=EBI-12917, EBI-6940;
+CC       Q03735:NAB6; NbExp=2; IntAct=EBI-12917, EBI-27955;
+CC       Q01329:PTA1; NbExp=8; IntAct=EBI-12917, EBI-14145;
+CC   -!- SUBCELLULAR LOCATION: Nucleus {ECO:0000269|PubMed:12819204,
+CC       ECO:0000269|PubMed:14562095}.
+CC   -!- MISCELLANEOUS: Present with 17100 molecules/cell in log phase SD
+CC       medium. {ECO:0000269|PubMed:14562106}.
+CC   -!- SIMILARITY: Belongs to the poly(A) polymerase family.
+CC       {ECO:0000305}.
+CC   -----------------------------------------------------------------------
+CC   Copyrighted by the UniProt Consortium, see https://www.uniprot.org/terms
+CC   Distributed under the Creative Commons Attribution (CC BY 4.0) License
+CC   -----------------------------------------------------------------------
+DR   EMBL; X60307; CAA42852.1; -; Genomic_DNA.
+DR   EMBL; X65124; CAA46250.1; -; Genomic_DNA.
+DR   EMBL; Z28227; CAA82072.1; -; Genomic_DNA.
+DR   EMBL; BK006944; DAA09158.1; -; Genomic_DNA.
+DR   PIR; S19031; S19031.
+DR   RefSeq; NP_012927.3; NM_001179792.3.
+DR   PDB; 1FA0; X-ray; 2.60 A; A/B=1-537.
+DR   PDB; 2HHP; X-ray; 1.80 A; A=1-530.
+DR   PDB; 2O1P; X-ray; 2.70 A; A/B=1-538.
+DR   PDB; 2Q66; X-ray; 1.80 A; A=5-529.
+DR   PDB; 3C66; X-ray; 2.60 A; A/B=1-526.
+DR   PDBsum; 1FA0; -.
+DR   PDBsum; 2HHP; -.
+DR   PDBsum; 2O1P; -.
+DR   PDBsum; 2Q66; -.
+DR   PDBsum; 3C66; -.
+DR   ProteinModelPortal; P29468; -.
+DR   SMR; P29468; -.
+DR   BioGrid; 34134; 75.
+DR   ComplexPortal; CPX-1053; Cleavage and polyadenylation specificity factor complex.
+DR   DIP; DIP-2297N; -.
+DR   IntAct; P29468; 30.
+DR   MINT; P29468; -.
+DR   STRING; 4932.YKR002W; -.
+DR   iPTMnet; P29468; -.
+DR   MaxQB; P29468; -.
+DR   PaxDb; P29468; -.
+DR   PRIDE; P29468; -.
+DR   EnsemblFungi; YKR002W_mRNA; YKR002W_mRNA; YKR002W.
+DR   GeneID; 853871; -.
+DR   KEGG; sce:YKR002W; -.
+DR   SGD; S000001710; PAP1.
+DR   GeneTree; ENSGT00940000168779; -.
+DR   HOGENOM; HOG000204376; -.
+DR   InParanoid; P29468; -.
+DR   KO; K14376; -.
+DR   OMA; YQKVYGI; -.
+DR   BioCyc; YEAST:G3O-31980-MONOMER; -.
+DR   BRENDA; 2.7.7.19; 984.
+DR   EvolutionaryTrace; P29468; -.
+DR   PRO; PR:P29468; -.
+DR   Proteomes; UP000002311; Chromosome XI.
+DR   GO; GO:0005847; C:mRNA cleavage and polyadenylation specificity factor complex; IDA:SGD.
+DR   GO; GO:0005654; C:nucleoplasm; IPI:SGD.
+DR   GO; GO:0005634; C:nucleus; IBA:GO_Central.
+DR   GO; GO:0005524; F:ATP binding; IDA:UniProtKB.
+DR   GO; GO:0000287; F:magnesium ion binding; IDA:UniProtKB.
+DR   GO; GO:0004652; F:polynucleotide adenylyltransferase activity; IDA:UniProtKB.
+DR   GO; GO:0003723; F:RNA binding; IEA:UniProtKB-KW.
+DR   GO; GO:0006378; P:mRNA polyadenylation; IDA:SGD.
+DR   GO; GO:0043631; P:RNA polyadenylation; IDA:UniProtKB.
+DR   GO; GO:0071050; P:snoRNA polyadenylation; IGI:SGD.
+DR   InterPro; IPR011068; NuclTrfase_I-like_C.
+DR   InterPro; IPR007012; PolA_pol_cen_dom.
+DR   InterPro; IPR007010; PolA_pol_RNA-bd_dom.
+DR   InterPro; IPR014492; PolyA_polymerase.
+DR   InterPro; IPR002934; Polymerase_NTP_transf_dom.
+DR   PANTHER; PTHR10682; PTHR10682; 1.
+DR   Pfam; PF01909; NTP_transf_2; 1.
+DR   Pfam; PF04928; PAP_central; 1.
+DR   Pfam; PF04926; PAP_RNA-bind; 1.
+DR   PIRSF; PIRSF018425; PolyA_polymerase; 1.
+DR   SUPFAM; SSF55003; SSF55003; 1.
+PE   1: Evidence at protein level;
+KW   3D-structure; ATP-binding; Complete proteome;
+KW   Direct protein sequencing; Magnesium; Manganese; Metal-binding;
+KW   mRNA processing; Nucleotide-binding; Nucleus; Phosphoprotein;
+KW   Reference proteome; RNA-binding; Transferase.
+FT   CHAIN         1    568       Poly(A) polymerase.
+FT                                /FTId=PRO_0000051621.
+FT   NP_BIND      87     89       ATP. {ECO:0000269|PubMed:17850751}.
+FT   NP_BIND      99    102       ATP. {ECO:0000269|PubMed:17850751}.
+FT   NP_BIND     100    102       ATP. {ECO:0000269|PubMed:17850751}.
+FT   NP_BIND     233    234       ATP. {ECO:0000269|PubMed:17850751}.
+FT   METAL       100    100       Magnesium 1; catalytic.
+FT   METAL       100    100       Magnesium 2; catalytic.
+FT   METAL       102    102       Magnesium 1; catalytic.
+FT   METAL       102    102       Magnesium 2; catalytic.
+FT   METAL       154    154       Magnesium 2; catalytic.
+FT   BINDING     154    154       ATP. {ECO:0000269|PubMed:17850751}.
+FT   BINDING     215    215       ATP. {ECO:0000269|PubMed:17850751}.
+FT   BINDING     224    224       ATP. {ECO:0000269|PubMed:17850751}.
+FT   SITE        140    140       Interaction with RNA.
+FT   SITE        145    145       Interaction with RNA.
+FT   SITE        294    294       Interaction with RNA.
+FT   SITE        314    314       Interaction with RNA.
+FT   SITE        315    315       Interaction with RNA.
+FT   SITE        387    387       Interaction with RNA.
+FT   SITE        392    392       Interaction with RNA.
+FT   SITE        487    487       Interaction with RNA.
+FT   MOD_RES     452    452       Phosphoserine.
+FT                                {ECO:0000244|PubMed:18407956}.
+FT   MOD_RES     550    550       Phosphoserine.
+FT                                {ECO:0000244|PubMed:19779198}.
+FT   MUTAGEN     154    154       D->A: Loss of enzyme activity.
+FT                                {ECO:0000269|PubMed:17850751}.
+FT   MUTAGEN     189    189       N->A: Slightly reduced rate of
+FT                                adenylyltransfer.
+FT                                {ECO:0000269|PubMed:17850751}.
+FT   MUTAGEN     215    215       K->A: Reduces rate of adenylyltransfer
+FT                                about four-fold.
+FT                                {ECO:0000269|PubMed:17850751}.
+FT   MUTAGEN     226    226       N->A: Reduces rate of adenylyltransfer by
+FT                                half. {ECO:0000269|PubMed:17850751}.
+FT   MUTAGEN     485    485       C->R: Abolishes interaction with FIP1;
+FT                                when associated with Y-489.
+FT                                {ECO:0000269|PubMed:18537269}.
+FT   MUTAGEN     489    489       V->Y: Abolishes interaction with FIP1;
+FT                                when associated with R-485.
+FT                                {ECO:0000269|PubMed:18537269}.
+FT   HELIX         5      7       {ECO:0000244|PDB:2HHP}.
+FT   STRAND        8     10       {ECO:0000244|PDB:2Q66}.
+FT   HELIX        20     35       {ECO:0000244|PDB:2HHP}.
+FT   HELIX        42     69       {ECO:0000244|PDB:2HHP}.
+FT   HELIX        74     79       {ECO:0000244|PDB:2HHP}.
+FT   STRAND       83     87       {ECO:0000244|PDB:2HHP}.
+FT   HELIX        88     92       {ECO:0000244|PDB:2HHP}.
+FT   STRAND      101    107       {ECO:0000244|PDB:2HHP}.
+FT   HELIX       113    125       {ECO:0000244|PDB:2HHP}.
+FT   STRAND      130    136       {ECO:0000244|PDB:2HHP}.
+FT   STRAND      139    141       {ECO:0000244|PDB:2HHP}.
+FT   STRAND      143    148       {ECO:0000244|PDB:2HHP}.
+FT   STRAND      151    159       {ECO:0000244|PDB:2HHP}.
+FT   STRAND      161    163       {ECO:0000244|PDB:2HHP}.
+FT   HELIX       174    177       {ECO:0000244|PDB:2HHP}.
+FT   HELIX       182    200       {ECO:0000244|PDB:2HHP}.
+FT   HELIX       204    220       {ECO:0000244|PDB:2HHP}.
+FT   HELIX       226    228       {ECO:0000244|PDB:2HHP}.
+FT   HELIX       233    246       {ECO:0000244|PDB:2HHP}.
+FT   HELIX       252    265       {ECO:0000244|PDB:2HHP}.
+FT   STRAND      272    275       {ECO:0000244|PDB:2HHP}.
+FT   STRAND      281    283       {ECO:0000244|PDB:1FA0}.
+FT   TURN        289    291       {ECO:0000244|PDB:2HHP}.
+FT   HELIX       293    296       {ECO:0000244|PDB:2HHP}.
+FT   STRAND      305    308       {ECO:0000244|PDB:2HHP}.
+FT   TURN        312    315       {ECO:0000244|PDB:2HHP}.
+FT   HELIX       318    339       {ECO:0000244|PDB:2HHP}.
+FT   HELIX       345    348       {ECO:0000244|PDB:2HHP}.
+FT   HELIX       354    357       {ECO:0000244|PDB:2HHP}.
+FT   STRAND      359    370       {ECO:0000244|PDB:2HHP}.
+FT   HELIX       372    394       {ECO:0000244|PDB:2HHP}.
+FT   STRAND      399    404       {ECO:0000244|PDB:2HHP}.
+FT   STRAND      409    414       {ECO:0000244|PDB:2HHP}.
+FT   STRAND      417    419       {ECO:0000244|PDB:2HHP}.
+FT   HELIX       420    427       {ECO:0000244|PDB:2HHP}.
+FT   STRAND      428    430       {ECO:0000244|PDB:1FA0}.
+FT   HELIX       431    434       {ECO:0000244|PDB:2HHP}.
+FT   HELIX       435    439       {ECO:0000244|PDB:1FA0}.
+FT   TURN        444    446       {ECO:0000244|PDB:2Q66}.
+FT   HELIX       451    455       {ECO:0000244|PDB:2Q66}.
+FT   STRAND      458    470       {ECO:0000244|PDB:2HHP}.
+FT   STRAND      475    477       {ECO:0000244|PDB:2O1P}.
+FT   HELIX       482    494       {ECO:0000244|PDB:2HHP}.
+FT   TURN        497    500       {ECO:0000244|PDB:2HHP}.
+FT   STRAND      502    513       {ECO:0000244|PDB:2HHP}.
+FT   HELIX       514    516       {ECO:0000244|PDB:2HHP}.
+FT   HELIX       519    521       {ECO:0000244|PDB:2HHP}.
+SQ   SEQUENCE   568 AA;  64552 MW;  759DE5210DC8D881 CRC64;
+     MSSQKVFGIT GPVSTVGATA AENKLNDSLI QELKKEGSFE TEQETANRVQ VLKILQELAQ
+     RFVYEVSKKK NMSDGMARDA GGKIFTYGSY RLGVHGPGSD IDTLVVVPKH VTREDFFTVF
+     DSLLRERKEL DEIAPVPDAF VPIIKIKFSG ISIDLICARL DQPQVPLSLT LSDKNLLRNL
+     DEKDLRALNG TRVTDEILEL VPKPNVFRIA LRAIKLWAQR RAVYANIFGF PGGVAWAMLV
+     ARICQLYPNA CSAVILNRFF IILSEWNWPQ PVILKPIEDG PLQVRVWNPK IYAQDRSHRM
+     PVITPAYPSM CATHNITEST KKVILQEFVR GVQITNDIFS NKKSWANLFE KNDFFFRYKF
+     YLEITAYTRG SDEQHLKWSG LVESKVRLLV MKLEVLAGIK IAHPFTKPFE SSYCCPTEDD
+     YEMIQDKYGS HKTETALNAL KLVTDENKEE ESIKDAPKAY LSTMYIGLDF NIENKKEKVD
+     IHIPCTEFVN LCRSFNEDYG DHKVFNLALR FVKGYDLPDE VFDENEKRPS KKSKRKNLDA
+     RHETVKRSKS DAASGDNING TTAAVDVN
+//
+"""
+
+--}
+
+--{2 Run Tests
+
+-- Uncomment the case block(s) that you would like to test.
+namespace Main
+
+  main : IO ()
+  main = do
+--    case parse parseID block_id of
+--      Left err => putStrLn err
+--      Right v  => putStrLn $ show v
+--    case parse parseAC block_ac of
+--      Left err => putStrLn err
+--      Right v  => putStrLn $ show v
+--    case parse parseDT block_dt of
+--      Left err => putStrLn err
+--      Right v  => putStrLn $ show v
+--    case parse parseDE block_de of
+--      Left err => putStrLn err
+--      Right v  => putStrLn $ show v
+--    case parse parseGN block_gn of
+--      Left err => putStrLn err
+--      Right v  => putStrLn $ show v
+--    case parse parseOS block_os of
+--      Left err => putStrLn err
+--      Right v  => putStrLn $ show v
+--    case parse parseOG block_og of
+--      Left err => putStrLn err
+--      Right v  => putStrLn $ show v
+--    case parse parseOC block_oc of
+--      Left err => putStrLn err
+--      Right v  => putStrLn $ show v
+--    case parse parseOX block_ox of
+--      Left err => putStrLn err
+--      Right v  => putStrLn $ show v
+--    case parse parseOH block_oh of
+--      Left err => putStrLn err
+--      Right v  => putStrLn $ show v
+    case parse parseRef block_ref of
+      Left err => putStrLn err
+      Right v  => putStrLn $ show v
+--    case parse parseCC block_cc of
+--      Left err => putStrLn err
+--      Right v  => putStrLn $ show v
+--    case parse parseDR block_dr of
+--      Left err => putStrLn err
+--      Right v  => putStrLn $ show v
+--    case parse parsePE block_pe of
+--      Left err => putStrLn err
+--      Right v  => putStrLn $ show v
+--    case parse parseKW block_kw of
+--      Left err => putStrLn err
+--      Right v  => putStrLn $ show v
+--    case parse parseFT block_ft of
+--      Left err => putStrLn err
+--      Right v  => putStrLn $ show v
+--    case parse parseSQ block_sq of
+--      left err => putstrln err
+--      right v  => putstrln $ show v
+
+--    case parse parseEntry entry1 of
+--      Left err => putStrLn err
+--      Right v  => putStrLn $ show v
+
+--}
+
+--}
+
+

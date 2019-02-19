@@ -7,13 +7,13 @@ stdenv.mkDerivation rec {
   buildInputs = [
     (idrisPackages.with-packages (with idrisPackages; [
       #-- put idris packages here
-      effects aatree
+      effects aatree lightyear testing
     ]))
   ];
 
   #-- alias idris to set path and load packages
   shellHook = ''
-    idrisHook() { idris -i./src -p effects -p aatree "$@"; }
+    idrisHook() { idris -i./src -p effects -p aatree -p lightyear -p testing "$@"; }
     alias idr=idrisHook
   '';
 

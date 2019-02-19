@@ -4,3 +4,9 @@
 *.a
 *.so
 
+bio4j_graph.jpg
+utils/outdir
+
+parse_uniprot
+test_parser
+
