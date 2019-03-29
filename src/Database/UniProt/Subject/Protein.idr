@@ -20,8 +20,8 @@ import Data.String
 %default partial
 %access export
 
--- %flag C "-O3"
--- %flag C "-g"
+%flag C "-O3"
+%flag C "-g"
 
 --}
 
@@ -541,7 +541,7 @@ parseDE = MkDE <$>  opt (nameNode "RecName:")
 -- sequence. This field is comprised of 4 optional tokens: Name, Synonyms, OrderedLocusNames, and
 -- ORFNames. Note that each GN field could spread across lines.
 --
---The format for this field is:
+-- The format for this field is:
 --
 -- > GN   Name=<name>; Synonyms=<name1>[, <name2>...]; OrderedLocusNames=<name1>[, <name2>...];
 -- > GN   ORFNames=<name1>[, <name2>...];
@@ -552,7 +552,8 @@ parseDE = MkDE <$>  opt (nameNode "RecName:")
 -- > GN   and
 -- > GN   Name=Jon99Ciii; Synonyms=SER2, SER5, Ser99Db; ORFNames=CG15519;
 --
--- When there is more than one associated gene.
+-- When there is more than one associated gene. Each additional gene is prefixed with an 'and'
+-- line.
 --
 -- [ Name ]:
 --

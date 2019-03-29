@@ -18,13 +18,25 @@ import Lightyear.Strings
 %default partial
 %access export
 
--- %flag C "-O3"
--- %flag C "-g"
+%flag C "-O3"
+%flag C "-g"
 
 --}
 
 ---------------------------------------------------------------------------------------[ OS Field ]
 --{1
+
+--{2 Documentation
+--
+-- The 'OS' (Organism Species) field specifies the organism that the protein sample was obtained
+-- from. The line is formatted as:
+--
+-- > OS   Name[ (Synonym)]...[ (Synonym)].
+--
+-- Generally, the Name field follows the format 'Genus Species'. The Synonyms, or common names,
+-- are given in English.
+--
+--}
 
 --{2 OS
 
@@ -88,6 +100,47 @@ parseOS = MkOS <$> (os *> name) <*> (common <* endOfLine)
 
 ---------------------------------------------------------------------------------------[ OG Field ]
 --{1
+
+--{2 Documentation
+--
+-- The 'OG' (Organelle) field indicates if the gene coding for a protein originates from
+-- mitochondria, a plastid, a nucleomorph or a plasmid. Possible values for an OG line are:
+--
+-- > OG   Hydrogenosome.
+--
+-- > OG   Mitochondrion.
+--
+-- > OG   Nucleomorph.
+--
+-- > OG   Plasmid plasmid-name.
+--
+-- > OG   Plastid.
+--
+-- > OG   Plastid; plastid-type.
+--
+-- The 'plasmid-name' value is an assigned string name.
+--
+-- The 'plastid-name' values can be assigned any of the following:
+--
+--     * Apicoplast
+--
+--     * Chloroplast
+--
+--     * Organellar chromatophore
+--
+--     * Cyanelle
+--
+--     * Non-photosynthetic plastid
+--
+-- If there are multiple organelles present, the plasmid names are separated by commas and the last
+-- plasmid name is preceded by the word 'and'. Plasmid names are never written across two lines.
+-- Example:
+--
+-- > OG   Plasmid R6-5, Plasmid IncFII R100 (NR1), and
+-- > OG   Plasmid IncFII R1-19 (R1 drd-19).
+--
+--
+--}
 
 --{2 Plastid
 
@@ -195,6 +248,21 @@ parseOG = many (((nonPlasmid <*! many (noneOf ".") <*! (tok $ char '.'))
 ---------------------------------------------------------------------------------------[ OC Field ]
 --{1
 
+--{2 Documentation
+--
+-- The 'OC' (Organism Classification) field specifies the taxonomic classification of the organism.
+-- This information is maintained at NCBI-Taxonomy, and is used by the nucleotide sequence
+-- databases (EMBL/GenBank/DDBJ). The NCBI's taxonomy reflects current phylogenetic knowledge.
+--
+-- The classification is listed top-down as nodes in a taxonomic tree in which the most general
+-- grouping is given first. The classification may be distributed over several OC lines, but nodes
+-- are not split or hyphenated between lines. Semicolons separate the individual items and the list
+-- is terminated by a period.
+--
+-- > OC   Node[; Node...].
+--
+--}
+
 --{2  OC
 
 record OC where
@@ -232,6 +300,20 @@ parseOC = (\x,y => MkOC (x::y)) <$> (os *!> str) <*!> (taxa <*! (tok $ char '.')
 ---------------------------------------------------------------------------------------[ OX Field ]
 --{1
 
+--{2 Documentation
+--
+-- The 'OX' (Organism Taxonomy Cross-Reference) field indicates the identifier of a specific
+-- organism in a taxonomic database. The format is:
+--
+-- > OX   Taxonomy_database_Qualifier=Taxonomic code;
+--
+-- Currently the cross-references are made to the taxonomy database of NCBI, which is associated
+-- with the qualifier 'TaxID' and a taxonomic code. Example:
+--
+-- > OX   NCBI_TaxID=9606;
+--
+--}
+
 --{2 OX
 
 record OX where
@@ -261,6 +343,18 @@ parseOX = MkOX
 
 ---------------------------------------------------------------------------------------[ OH Field ]
 --{1
+
+--{2 Documentation
+--
+-- The 'OH' (Organism Host) field is optional and appears only in viral entries. It indicates the
+-- host organism(s) that are susceptible to be infected by a virus. The format for each OH entry
+-- is:
+--
+-- > OH   NCBI_TaxID=TaxID; HostName.
+--
+-- Where HostName follows the same format as the OS field.
+--
+--}
 
 --{2 OH
 
