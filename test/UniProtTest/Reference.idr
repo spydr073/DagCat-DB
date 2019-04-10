@@ -9,7 +9,7 @@
 
 module UniProtTest.Reference
 
-import Database.UniProt.Types
+import Database.UniProt.Subject.Reference
 
 %access export
 %default total

@@ -84,5 +84,13 @@ mllst pre sep end = let str = with List (pack <$> many (noneOf $ pack [sep, end,
                   <*> many ((char sep) *> opt (endOfLine *> string pre) *> whitespace *> str)
                       <* char end
 
+||| Parse a complete block from uniprot file into string
+|||   @pre : the uniprot field prefix
+chunk : (pre : String) -> Parser String
+chunk pre = let str = pack <$> some (noneOf "\n")
+            in (\x,y => concat (intersperse " " (x::y)))
+          <$> (string pre *> whitespace *> str)
+          <*> (many (endOfLine *> string pre *> whitespace *> str))
+
 --}
 

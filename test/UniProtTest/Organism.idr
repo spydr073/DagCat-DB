@@ -9,7 +9,7 @@
 
 module UniProtTest.Organism
 
-import Database.UniProt.Types
+import Database.UniProt.Subject.Organism
 
 %access export
 %default total

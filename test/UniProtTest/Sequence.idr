@@ -9,7 +9,7 @@
 
 module UniProtTest.Sequence
 
-import Database.UniProt.Types
+import Database.UniProt.Subject.Sequence
 
 %access export
 %default total

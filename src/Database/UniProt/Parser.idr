@@ -9,17 +9,17 @@
 
 module Database.UniProt.Parser
 
-import Lightyear
-import Lightyear.Char
-import Lightyear.Strings
-import Lightyear.StringFile
-
 import Database.UniProt.Utils
 
-import Database.UniProt.Subject.Protein
-import Database.UniProt.Subject.Organism
-import Database.UniProt.Subject.Reference
-import Database.UniProt.Subject.Sequence
+import public Lightyear
+import public Lightyear.Char
+import public Lightyear.Strings
+import public Lightyear.StringFile
+
+import public Database.UniProt.Subject.Protein
+import public Database.UniProt.Subject.Organism
+import public Database.UniProt.Subject.Reference
+import public Database.UniProt.Subject.Sequence
 
 %default partial
 %access export

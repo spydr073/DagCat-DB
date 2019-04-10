@@ -144,6 +144,7 @@ parseOS = MkOS <$> (os *> name) <*> (common <* endOfLine)
 
 --{2 Plastid
 
+public export
 data PlastidType = PlastidSimple
                  | PlastidApicoplast
                  | PlastidChloroplast
@@ -174,6 +175,7 @@ Show PlastidType where
 
 --{2 OG
 
+public export
 data OG = Hydrogenosome
         | Mitochondrion
         | Nucleomorph
@@ -280,17 +282,17 @@ Show OC where
 --{2 Parser
 
 parseOC : Parser OC
-parseOC = (\x,y => MkOC (x::y)) <$> (os *!> str) <*!> (taxa <*! (tok $ char '.')) <*! endOfLine
+parseOC = (\x,y => MkOC (x::y)) <$> (oc *!> str) <*!> taxa <*! endOfLine
       <?> "OC Field"
   where
-    os : Parser ()
-    os = string "OC" *!> whitespace
+    oc : Parser ()
+    oc = string "OC" *!> whitespace
 
     str : Parser String
-    str = (trim . pack) <$> many (noneOf ";.\n")
+    str = (trimBy (\x => List.elem x [' ','.']) . pack) <$> many (noneOf ";\n")
 
     taxa : Parser (List String)
-    taxa = many ((tok $ char ';') *!> (opt (endOfLine *!> os)) *!> str)
+    taxa = many ((tok $ char ';') *!> (opt (endOfLine *!> oc)) *!> str)
        <?> "OC taxa list"
 
 --}
@@ -375,28 +377,29 @@ Show OH where
 --{2 Parser
 
 parseOH : Parser (List OH)
-parseOH = many (MkOH <$> tid <*!> name <*!> (common <*! char '.' <*! (opt endOfLine)))
+parseOH = many (MkOH <$> tid <*> name <*> common <* endOfLine)
      <?> "OH Field"
   where
     oh : Parser ()
     oh = (string "OH") *> whitespace
 
-    tid : Parser (String,String)
+    tid : Parser (String, String)
     tid = MkPair
      <$> (pack <$> (oh *!> many (noneOf "=") <*! char '='))
-     <*!> (pack <$> (many (noneOf ";")) <*! (tok (char ';')))
+     <*> (pack <$> (many (noneOf ";")) <*! (tok (char ';')))
 
     str : Parser String
-    str = (trim . pack) <$> many (noneOf "().\n")
+    str = (trimBy (\x => List.elem x [' ','.']) . pack) <$> many (noneOf "()\n")
 
     name : Parser String
     name = (\x,y => if y == "" then x else x ++ " " ++ y)
        <$> str
-       <*!> (concat . intersperse " ") <$> (many (endOfLine *!> oh *!> str))
+       <*> ((concat . intersperse " ") <$> (many (endOfLine *!> oh *!> str)))
        <?> "OH species name"
 
     common : Parser (List String)
     common = many (whitespace *> (opt $ endOfLine *!> oh) *> char '(' *!> name <*! char ')')
+        <*  opt (char '.')
         <?> "OH common names"
 
 --}

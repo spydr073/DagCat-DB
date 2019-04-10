@@ -9,7 +9,7 @@
 
 module UniProtTest.Protein
 
-import Database.UniProt.Types
+import Database.UniProt.Subject.Protein
 
 %access export
 %default total
@@ -460,10 +460,18 @@ GN   Name=Jon99Ciii; Synonyms=SER2, SER5, Ser99Db; ORFNames=CG15519;
 GN   OrderedLocusNames=b1237, c1701, z2013, ECs1739;
 """,
 [ MkGN (Just "hns")
-       [ "bglY", "cur", "drdX", "hnsA", "msyA"
-       , "osmZ", "pilG", "topS" ]
+       [ "bglY", "cur", "drdX", "hnsA", "msyA" , "osmZ", "pilG", "topS" ]
        [ "b1237", "c1701", "z2013", "ECs1739" ]
        []
+]
+),
+(-- Test 6
+"""GN   Name=ACTIA;
+GN   and
+GN   Name=ACTIB;
+""",
+[ MkGN (Just "ACTIA") [] [] []
+, MkGN (Just "ACTIB") [] [] []
 ]
 )
 ]-- End

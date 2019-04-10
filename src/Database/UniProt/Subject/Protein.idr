@@ -66,6 +66,7 @@ import Data.String
 
 --{2  Status
 
+public export
 data Status = Reviewed
             | Unreviewed
 
@@ -392,6 +393,7 @@ Show Name where
 
 --{2 AltName
 
+public export
 data AltName = Simple Name
              | Allergen String
              | Biotech String
@@ -419,6 +421,7 @@ Show AltName where
 
 --{2 Flag
 
+public export
 data Flag = Fragment
           | Fragments
           | Precursor
@@ -616,10 +619,8 @@ parseGN = (::) <$> gene <*> many (gnAnd *> gene) <?> "GN field"
 
     optList : String -> Parser (List String)
     optList str = (fromJust [])
-              <$> (opt (gn <|>| (endOfLine *> gn)) *>
-                   opt ((tok $ string str) *>
-                         sepBy nameStr (char ',') <*
-                         (tok $ char ';')))
+              <$> opt (((endOfLine *> gn) <|> gn <|> whitespace) *>
+                       (tok $ string str) *> sepBy nameStr (char ',') <* (tok $ char ';'))
 
     name : Parser (Maybe String)
     name = opt (gn *> (tok $ string "Name=") *> nameStr <* (tok $ char ';'))

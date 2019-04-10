@@ -9,7 +9,6 @@
 
 module TestUniProtParser
 
-import Database.UniProt.Types
 import Database.UniProt.Parser
 
 import UniProtTest.Protein

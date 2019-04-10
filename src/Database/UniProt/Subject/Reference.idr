@@ -41,6 +41,7 @@ import Data.String
 
 --{2 RN
 
+public export
 RN : Type
 RN = Int
 
@@ -75,6 +76,7 @@ parseRN = ((fromJust 0) . parseInteger . pack)
 
 --{2 RP
 
+public export
 RP : Type
 RP = String
 
@@ -134,6 +136,7 @@ parseRP = (\x,y => case y of [] => x; _ => concat (x :: " " :: (intersperse " " 
 
 --{2 RCom
 
+public export
 data RCom = STRAIN
           | PLASMID
           | TRANSPOSON
@@ -158,6 +161,7 @@ Show RCom where
 
 --{2 RC
 
+public export
 RC : Type
 RC = List (RCom, String)
 
@@ -214,6 +218,7 @@ parseRC = (\x,y => x ++ y)
 
 --{2 BibDb
 
+public export
 data BibDB = MEDLINE
            | PubMed
            | DOI
@@ -238,6 +243,7 @@ Show BibDB where
 
 --{2 RX
 
+public export
 RX : Type
 RX = List (BibDB, String)
 
@@ -256,7 +262,9 @@ parseRX = (\x,y => x ++ y)
  <?> "RX cross reference"
   where
     rxTok : Parser String
-    rxTok = pack <$> many (noneOf ";\n")
+    rxTok = (\x,y => case y of Just v => x ++ v; _ => x)
+        <$> (pack <$> many (noneOf ";\n"))
+        <*> opt ((\x,y => pack (x::y)) <$> char ';' <*> some (noneOf "\n "))
 
     rxFst : Parser BibDB
     rxFst = ((string "MEDLINE=")  *!> pure MEDLINE)
@@ -265,12 +273,14 @@ parseRX = (\x,y => x ++ y)
        <|>| ((string "AGRICOLA=") *!> pure AGRICOLA)
 
     rxSnd : Parser String
-    rxSnd = (\x,y => case y of [] => x; _ => concat (x :: " " :: (intersperse " " y)))
-        <$> rxTok
-        <*> (many (endOfLine *> string "RX" *> whitespace *> rxTok))
+    rxSnd = ((trimBy (== ';')) . pack)
+        <$> some (noneOf " \n") <* (whitespace <|> endOfLine *> pure ())
+    --rxSnd = (\x,y => case y of [] => x; _ => concat (x :: " " :: (intersperse " " y)))
+    --    <$> rxTok
+    --    <*> (many (endOfLine *> string "RX" *> whitespace *> rxTok))
 
     rxVal : Parser (BibDB, String)
-    rxVal = MkPair <$> rxFst <*> (rxSnd <* tok (char ';'))
+    rxVal = MkPair <$> rxFst <*> rxSnd
 
 --}
 
@@ -292,6 +302,7 @@ parseRX = (\x,y => x ++ y)
 
 --{2 RG
 
+public export
 RG : Type
 RG = List String
 
@@ -335,6 +346,7 @@ parseRG = (\x,y => map trim $ x ++ y)
 
 --{2 RA
 
+public export
 RA : Type
 RA = List String
 
@@ -379,6 +391,7 @@ parseRA = (map trim) <$> (mllst "RA" ',' ';') <* endOfLine
 
 --{2 RT
 
+public export
 RT : Type
 RT = String
 
@@ -387,7 +400,7 @@ RT = String
 --{2 Parser
 
 parseRT : Parser RT
-parseRT = (string "RT") *> (trimBy (=='"') <$> mlstr "RT" ';') <* char ';' <* endOfLine
+parseRT = (string "RT") *> (trimBy (\x => List.elem x ['"',';']) <$> mlstr' "RT") <* endOfLine
 
 --}
 
@@ -410,6 +423,7 @@ parseRT = (string "RT") *> (trimBy (=='"') <$> mlstr "RT" ';') <* char ';' <* en
 
 --{2 RL
 
+public export
 RL : Type
 RL = String
 
