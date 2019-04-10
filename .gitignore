@@ -8,5 +8,6 @@ bio4j_graph.jpg
 utils/outdir
 
 parse_uniprot
-test_parser
+up_parser
+run_uniprot_parse_test
 
